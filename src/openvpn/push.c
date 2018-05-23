@@ -1002,7 +1002,7 @@ process_incoming_push_msg(struct context *c,
 void
 remove_iroutes_from_push_route_list(struct options *o)
 {
-    if (o && o->push_list.head && o->iroutes)
+    if (o && o->push_list.head && (o->iroutes || o->iroutes_ipv6))
     {
         struct gc_arena gc = gc_new();
         struct push_entry *e = o->push_list.head;
@@ -1035,6 +1035,29 @@ remove_iroutes_from_push_route_list(struct options *o)
                         for (ir = o->iroutes; ir != NULL; ir = ir->next)
                         {
                             if (network == ir->network && netmask == netbits_to_netmask(ir->netbits >= 0 ? ir->netbits : 32))
+                            {
+                                enable = false;
+                                break;
+                            }
+                        }
+                    }
+                }
+                else if (p[0] && !strcmp(p[0], "route-ipv6") && !p[2])
+                {
+                    /* get route parameters */
+                    struct in6_addr network;
+                    unsigned int netbits;
+
+                    /* parse route-ipv6 arguments */
+                    if (get_ipv6_addr(p[1], &network, &netbits, D_ROUTE_DEBUG))
+                    {
+                        struct iroute_ipv6 *ir;
+
+                        /* does this route-ipv6 match an iroute-ipv6? */
+                        for (ir = o->iroutes_ipv6; ir != NULL; ir = ir->next)
+                        {
+                            if (!memcmp(&network, &ir->network, sizeof(network))
+                                && netbits == ir->netbits)
                             {
                                 enable = false;
                                 break;
