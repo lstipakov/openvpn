@@ -143,6 +143,13 @@ AC_ARG_ENABLE(
 )
 
 AC_ARG_ENABLE(
+    [dco],
+    [AS_HELP_STRING([--enable-dco], [enable data channel offload support using ovpn-dco kernel module @<:@default=no@:>@])],
+    ,
+    [enable_dco="no"]
+)
+
+AC_ARG_ENABLE(
 	[iproute2],
 	[AS_HELP_STRING([--enable-iproute2], [enable support for iproute2 @<:@default=no@:>@])],
 	,
@@ -765,6 +772,42 @@ PKG_CHECK_MODULES(
 	[have_pkcs11_helper="yes"],
 	[]
 )
+
+
+
+if test "$enable_dco" = "yes"; then
+dnl
+dnl  Configure path for the ovpn-dco header directory.
+dnl
+	AC_ARG_VAR([DCO_INCLUDEDIR], [ovpn-dco header directory (where to find ovpn-dco.h)])
+	if test -z "${DCO_INCLUDEDIR}"; then
+		AC_MSG_ERROR([You must specify DCO_INCLUDEDIR when using --enable-dco.])
+	fi
+
+	AC_MSG_NOTICE([Using ovpn-dco header directory: ${DCO_INCLUDEDIR}])
+	DCO_CFLAGS="-I${DCO_INCLUDEDIR}"
+
+dnl
+dnl Include generic netlink library used to talk to ovpn-dco
+dnl
+
+	PKG_CHECK_MODULES([LIBNL_GENL],
+			  [libnl-genl-3.0 >= 3.2.29],
+			  [have_libnl="yes"],
+			  [AC_MSG_ERROR([libnl-genl-3.0 package not found or too old. Is the development package and pkg-config installed? Must be version 3.4.0 or newer])]
+	)
+
+	CFLAGS="${CFLAGS} ${DCO_CFLAGS} ${LIBNL_GENL_CFLAGS}"
+	LIBS="${LIBS} ${LIBNL_GENL_LIBS}"
+
+	AC_CHECK_HEADERS([linux/ovpn_dco.h],
+			 ,
+			 [AC_MSG_ERROR([linux/ovpn_dco.h couldn't be found (use DCO_INCLUDEDIR to set the path to it, CFLAGS=${CFLAGS})])]
+	)
+
+	AC_DEFINE(ENABLE_LINUXDCO, 1, [Enable linux data channel offload])
+	AC_DEFINE(ENABLE_DCO, 1, [Enable shared data channel offload])
+fi
 
 if test "${with_crypto_library}" = "openssl"; then
 	AC_ARG_VAR([OPENSSL_CFLAGS], [C compiler flags for OpenSSL])
