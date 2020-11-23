@@ -862,4 +862,24 @@ void options_string_import(struct options *options,
                            unsigned int *option_types_found,
                            struct env_set *es);
 
+#if defined(ENABLE_LINUXDCO)
+
+/**
+ * Returns whether the current configuration has dco enabled.
+ */
+static inline bool
+dco_enabled(const struct options *o)
+{
+    return !o->tuntap_options.disable_dco;
+}
+
+#else
+
+static inline bool
+dco_enabled(const struct options *o)
+{
+    return false;
+}
+
+#endif
 #endif /* ifndef OPTIONS_H */
