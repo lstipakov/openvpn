@@ -255,6 +255,9 @@
     <ClCompile Include="xkey_provider.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="dco_win.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="base64.h">
@@ -378,6 +381,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="multi.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="networking_windco.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="ntlm.h">
@@ -527,7 +533,11 @@
     <ClInclude Include="win32-util.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+<<<<<<< HEAD
     <ClInclude Include="xkey_common.h">
+=======
+    <ClInclude Include="dco_win.h">
+>>>>>>> 41ca9de8 (ovpn-dco-win: introduce windows data-channel offload support)
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
