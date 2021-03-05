@@ -862,24 +862,19 @@ void options_string_import(struct options *options,
                            unsigned int *option_types_found,
                            struct env_set *es);
 
-#if defined(ENABLE_LINUXDCO)
-
 /**
  * Returns whether the current configuration has dco enabled.
  */
 static inline bool
 dco_enabled(const struct options *o)
 {
+#if defined(_WIN32)
+    return o->windows_driver == WINDOWS_DRIVER_WINDCO;
+#elif defined(ENABLE_DCO)
     return !o->tuntap_options.disable_dco;
-}
-
 #else
-
-static inline bool
-dco_enabled(const struct options *o)
-{
     return false;
+#endif /* defined(_WIN32) */
 }
 
-#endif
 #endif /* ifndef OPTIONS_H */
