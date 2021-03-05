@@ -56,6 +56,7 @@ openvpn_SOURCES = \
 	crypto_mbedtls.c crypto_mbedtls.h \
 	dco.c dco.h \
 	dco_linux.c dco_linux.h \
+	dco_win.c dco_win.h \
 	dhcp.c dhcp.h \
 	env_set.c env_set.h \
 	errlevel.h \

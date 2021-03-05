@@ -28,6 +28,7 @@
 
 #include "crypto.h"
 #include "dco_linux.h"
+#include "dco_win.h"
 #include "networking.h"
 
 /* forward declarations, including multi.h leads to nasty include

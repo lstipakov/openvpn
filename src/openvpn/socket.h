@@ -34,6 +34,7 @@
 #include "proxy.h"
 #include "socks.h"
 #include "misc.h"
+#include "tun.h"
 
 /*
  * OpenVPN's default port number as assigned by IANA.
@@ -1021,7 +1022,17 @@ link_socket_read_udp_win32(struct link_socket *sock,
                            struct buffer *buf,
                            struct link_socket_actual *from)
 {
-    return socket_finalize(sock->sd, &sock->reads, buf, from);
+    if (sock->info.dco_installed)
+    {
+        /* from address was set on socket creation and the kernel
+         * checks that it matches for us */
+        addr_copy_sa(&from->dest, &sock->info.lsa->actual.dest);
+        return tun_finalize((HANDLE)sock->sd, &sock->reads, buf);
+    }
+    else
+    {
+        return socket_finalize(sock->sd, &sock->reads, buf, from);
+    }
 }
 
 #else  /* ifdef _WIN32 */
@@ -1038,7 +1049,10 @@ link_socket_read(struct link_socket *sock,
                  struct buffer *buf,
                  struct link_socket_actual *from)
 {
-    if (proto_is_udp(sock->info.proto)) /* unified UDPv4 and UDPv6 */
+    if (proto_is_udp(sock->info.proto) 
+        || sock->info.dco_installed) 
+        /* unified UDPv4 and UDPv6, for DCO the kernel
+         * will strip the length header */
     {
         int res;
 
@@ -1082,15 +1096,34 @@ link_socket_write_win32(struct link_socket *sock,
     if (overlapped_io_active(&sock->writes))
     {
         status = socket_finalize(sock->sd, &sock->writes, NULL, NULL);
-        if (status < 0)
-        {
-            err = WSAGetLastError();
-        }
     }
     socket_send_queue(sock, buf, to);
     if (status < 0)
     {
         WSASetLastError(err);
+        return status;
+    }
+    else
+    {
+        return BLEN(buf);
+    }
+}
+
+static inline int
+link_socket_write_win32_dco(struct link_socket* sock,
+    struct buffer* buf,
+    struct link_socket_actual* to)
+{
+    int err = 0;
+    int status = 0;
+    if (overlapped_io_active(&sock->writes))
+    {
+        status = tun_finalize((HANDLE)sock->sd, &sock->writes, NULL);
+    }
+    socket_send_queue(sock, buf, to);
+    if (status < 0)
+    {
+        SetLastError(err);
         return status;
     }
     else
@@ -1140,7 +1173,14 @@ link_socket_write_udp(struct link_socket *sock,
                       struct link_socket_actual *to)
 {
 #ifdef _WIN32
-    return link_socket_write_win32(sock, buf, to);
+    if (sock->info.dco_installed)
+    {
+        return link_socket_write_win32_dco(sock, buf, to);
+    }
+    else
+    {
+        return link_socket_write_win32(sock, buf, to);
+    }
 #else
     return link_socket_write_udp_posix(sock, buf, to);
 #endif
@@ -1152,8 +1192,9 @@ link_socket_write(struct link_socket *sock,
                   struct buffer *buf,
                   struct link_socket_actual *to)
 {
-    if (proto_is_udp(sock->info.proto)) /* unified UDPv4 and UDPv6 */
+    if (proto_is_udp(sock->info.proto) || sock->info.dco_installed) 
     {
+        /* unified UDPv4 and UDPv6 and DCO (kernel adds size header) */
         return link_socket_write_udp(sock, buf, to);
     }
     else if (proto_is_tcp(sock->info.proto)) /* unified TCPv4 and TCPv6 */

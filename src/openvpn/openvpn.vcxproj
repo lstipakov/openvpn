@@ -254,6 +254,7 @@
     <ClCompile Include="crypto_openssl.c" />
     <ClCompile Include="cryptoapi.c" />
     <ClCompile Include="dco.c" />
+    <ClCompile Include="dco_win.c" />
     <ClCompile Include="dhcp.c" />
     <ClCompile Include="env_set.c" />
     <ClCompile Include="error.c" />
@@ -365,6 +366,7 @@
     <ClInclude Include="mtu.h" />
     <ClInclude Include="mudp.h" />
     <ClInclude Include="multi.h" />
+    <ClInclude Include="networking_windco.h" />
     <ClInclude Include="ntlm.h" />
     <ClInclude Include="occ.h" />
     <ClInclude Include="openvpn.h" />

@@ -787,25 +787,39 @@ dnl
 	AC_MSG_NOTICE([Using ovpn-dco header directory: ${DCO_INCLUDEDIR}])
 	DCO_CFLAGS="-I${DCO_INCLUDEDIR}"
 
+	case "$host" in
+		*-*-linux*)
 dnl
 dnl Include generic netlink library used to talk to ovpn-dco
 dnl
 
-	PKG_CHECK_MODULES([LIBNL_GENL],
-			  [libnl-genl-3.0 >= 3.2.29],
-			  [have_libnl="yes"],
-			  [AC_MSG_ERROR([libnl-genl-3.0 package not found or too old. Is the development package and pkg-config installed? Must be version 3.4.0 or newer])]
-	)
+			PKG_CHECK_MODULES([LIBNL_GENL],
+					  [libnl-genl-3.0 >= 3.2.29],
+					  [have_libnl="yes"],
+					  [AC_MSG_ERROR([libnl-genl-3.0 package not found or too old. Is the development package and pkg-config installed? Must be version 3.4.0 or newer])]
+			)
 
-	CFLAGS="${CFLAGS} ${DCO_CFLAGS} ${LIBNL_GENL_CFLAGS}"
-	LIBS="${LIBS} ${LIBNL_GENL_LIBS}"
+			CFLAGS="${CFLAGS} ${DCO_CFLAGS} ${LIBNL_GENL_CFLAGS}"
+			LIBS="${LIBS} ${LIBNL_GENL_LIBS}"
 
-	AC_CHECK_HEADERS([linux/ovpn_dco.h],
-			 ,
-			 [AC_MSG_ERROR([linux/ovpn_dco.h couldn't be found (use DCO_INCLUDEDIR to set the path to it, CFLAGS=${CFLAGS})])]
-	)
+			AC_CHECK_HEADERS([linux/ovpn_dco.h],
+					 ,
+					 [AC_MSG_ERROR([linux/ovpn_dco.h couldn't be found (use DCO_INCLUDEDIR to set the path to it, CFLAGS=${CFLAGS})])]
+			)
+			AC_DEFINE(ENABLE_LINUXDCO, 1, [Enable linux data channel offload])
+		;;
 
-	AC_DEFINE(ENABLE_LINUXDCO, 1, [Enable linux data channel offload])
+		*-mingw*)
+			CFLAGS="${CFLAGS} ${DCO_CFLAGS}"
+			AC_CHECK_HEADERS(
+				[uapi/ovpn-dco.h],
+				,
+				[AC_MSG_ERROR([uapi/ovpn-dco.h is missing (use DCO_INCLUDEDIR to set path to it, CFLAGS=${CFLAGS})])]
+			)
+			AC_DEFINE(ENABLE_WINDCO, 1, [Enable shared data channel offload for Windows])
+		;;
+	esac
+
 	AC_DEFINE(ENABLE_DCO, 1, [Enable shared data channel offload])
 fi
 

@@ -742,13 +742,23 @@ init_tun(const char *dev,        /* --dev option */
          struct addrinfo *remote_public,
          const bool strict_warn,
          struct env_set *es,
-         openvpn_net_ctx_t *ctx)
+         openvpn_net_ctx_t *ctx,
+         struct tuntap *tt)
 {
     struct gc_arena gc = gc_new();
-    struct tuntap *tt;
 
-    ALLOC_OBJ(tt, struct tuntap);
-    clear_tuntap(tt);
+    if (!tt)
+    {
+        ALLOC_OBJ(tt, struct tuntap);
+        clear_tuntap(tt);
+    }
+#ifdef ENABLE_WINDCO
+    else
+    {
+        ASSERT(!tt->dco.real_tun_init);
+        tt->dco.real_tun_init = true;
+    }
+#endif
 
     tt->type = dev_type_enum(dev, dev_type);
     tt->topology = topology;
@@ -891,6 +901,13 @@ init_tun_post(struct tuntap *tt,
 {
     tt->options = *options;
 #ifdef _WIN32
+#ifdef ENABLED_WINDCO
+    if (tt->windows_driver == WINDOWS_DRIVER_WINDCO)
+    {
+        dco_start_tun(tt);
+        return;
+    }
+#endif
     overlapped_io_init(&tt->reads, frame, FALSE, true);
     overlapped_io_init(&tt->writes, frame, TRUE, true);
     tt->adapter_index = TUN_ADAPTER_INDEX_INVALID;
@@ -3479,6 +3496,9 @@ print_windows_driver(enum windows_driver_type windows_driver)
 
         case WINDOWS_DRIVER_WINTUN:
             return "wintun";
+    
+        case WINDOWS_DRIVER_WINDCO:
+            return "ovpn-dco-win";
 
         default:
             return "unspecified";
@@ -3919,6 +3939,11 @@ get_tap_reg(struct gc_arena *gc)
                     {
                         windows_driver = WINDOWS_DRIVER_WINTUN;
                     }
+                    else if (strcasecmp(component_id, "ovpn-dco") == 0)
+                    {
+                        windows_driver = WINDOWS_DRIVER_WINDCO;
+                    }
+
 
                     if (windows_driver != WINDOWS_DRIVER_UNSPECIFIED)
                     {
@@ -4273,7 +4298,9 @@ at_least_one_tap_win(const struct tap_reg *tap_reg)
 {
     if (!tap_reg)
     {
-        msg(M_FATAL, "There are no TAP-Windows nor Wintun adapters on this system.  You should be able to create an adapter by using tapctl.exe utility.");
+        msg(M_FATAL, "There are no TAP-Windows, Wintun or ovpn-dco-win adapters "
+                     "on this system.  You should be able to create an adapter "
+                     "by using tapctl.exe utility.");
     }
 }
 
@@ -6473,7 +6500,7 @@ tun_try_open_device(struct tuntap *tt, const char *device_guid, const struct dev
     const char *path = NULL;
     char tuntap_device_path[256];
 
-    if (tt->windows_driver == WINDOWS_DRIVER_WINTUN)
+    if (tt->windows_driver == WINDOWS_DRIVER_WINTUN || tt->windows_driver == WINDOWS_DRIVER_WINDCO)
     {
         const struct device_instance_id_interface *dev_if;
 
@@ -6493,7 +6520,7 @@ tun_try_open_device(struct tuntap *tt, const char *device_guid, const struct dev
     }
     else
     {
-        /* Open TAP-Windows adapter */
+        /* Open TAP-Windows or dco-win adapter */
         openvpn_snprintf(tuntap_device_path, sizeof(tuntap_device_path), "%s%s%s",
                          USERMODEDEVICEDIR,
                          device_guid,
@@ -6529,7 +6556,7 @@ tun_try_open_device(struct tuntap *tt, const char *device_guid, const struct dev
     return true;
 }
 
-static void
+void
 tun_open_device(struct tuntap *tt, const char *dev_node, const char **device_guid, struct gc_arena *gc)
 {
     const struct tap_reg *tap_reg = get_tap_reg(gc);
@@ -6821,7 +6848,6 @@ netsh_delete_address_dns(const struct tuntap *tt, bool ipv6, struct gc_arena *gc
     argv_free(&argv);
 }
 
-static
 void close_tun_handle(struct tuntap* tt)
 {
     const char* adaptertype = print_windows_driver(tt->windows_driver);
