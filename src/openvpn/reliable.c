@@ -549,6 +549,13 @@ reliable_get_buf_sequenced(struct reliable *rel)
     return NULL;
 }
 
+static inline bool
+entry_ready_for_resend(const struct reliable_entry *e)
+{
+    return ((now >= e->next_try || e->n_acks >= N_ACK_RETRANSMIT)
+        && (!(e->flags & REL_FLAG_RESEND_INITIAL) || (e->flags & REL_FLAG_RESEND_ALLOW)));
+}
+
 /* return true if reliable_send would return a non-NULL result */
 bool
 reliable_can_send(const struct reliable *rel)
@@ -562,7 +569,7 @@ reliable_can_send(const struct reliable *rel)
         if (e->active)
         {
             ++n_active;
-            if (now >= e->next_try || e->n_acks >= N_ACK_RETRANSMIT)
+            if (entry_ready_for_resend(e))
             {
                 ++n_current;
             }
@@ -583,7 +590,6 @@ reliable_send(struct reliable *rel, int *opcode)
 {
     int i;
     struct reliable_entry *best = NULL;
-    const time_t local_now = now;
 
     for (i = 0; i < rel->size; ++i)
     {
@@ -592,8 +598,7 @@ reliable_send(struct reliable *rel, int *opcode)
         /* If N_ACK_RETRANSMIT later packets have received ACKs, we assume
          * that the packet was lost and resend it even if the timeout has
          * not expired yet. */
-        if (e->active
-            && (e->n_acks >= N_ACK_RETRANSMIT || local_now >= e->next_try))
+        if (e->active && entry_ready_for_resend(e))
         {
             if (!best || reliable_pid_min(e->packet_id, best->packet_id))
             {
@@ -605,17 +610,18 @@ reliable_send(struct reliable *rel, int *opcode)
     {
 #ifdef EXPONENTIAL_BACKOFF
         /* exponential backoff */
-        best->next_try = local_now + best->timeout;
+        best->next_try = now + best->timeout;
         best->timeout *= 2;
 #else
         /* constant timeout, no backoff */
-        best->next_try = local_now + best->timeout;
+        best->next_try = now + best->timeout;
 #endif
         best->n_acks = 0;
+        best->flags &= ~REL_FLAG_RESEND_ALLOW;
         *opcode = best->opcode;
         dmsg(D_REL_DEBUG, "ACK reliable_send ID " packet_id_format " (size=%d to=%d)",
              (packet_id_print_type)best->packet_id, best->buf.len,
-             (int)(best->next_try - local_now));
+             (int)(best->next_try - now));
         return &best->buf;
     }
     return NULL;
@@ -639,6 +645,22 @@ reliable_schedule_now(struct reliable *rel)
     }
 }
 
+
+void
+reliable_allow_reschedule_initial(struct reliable *rel)
+{
+    dmsg(D_REL_DEBUG, "ACK %s", __func__);
+    for (int i = 0; i < rel->size; ++i)
+    {
+        struct reliable_entry *e = &rel->array[i];
+        if (e->flags & REL_FLAG_RESEND_INITIAL)
+        {
+            e->flags |= REL_FLAG_RESEND_ALLOW;
+        }
+    }
+}
+
+
 /* in how many seconds should we wake up to check for timeout */
 /* if we return BIG_TIMEOUT, nothing to wait for */
 interval_t
@@ -647,21 +669,20 @@ reliable_send_timeout(const struct reliable *rel)
     struct gc_arena gc = gc_new();
     interval_t ret = BIG_TIMEOUT;
     int i;
-    const time_t local_now = now;
 
     for (i = 0; i < rel->size; ++i)
     {
         const struct reliable_entry *e = &rel->array[i];
         if (e->active)
         {
-            if (e->next_try <= local_now)
+            if (e->next_try <= now)
             {
                 ret = 0;
                 break;
             }
             else
             {
-                ret = min_int(ret, e->next_try - local_now);
+                ret = min_int(ret, e->next_try - now);
             }
         }
     }
@@ -712,10 +733,10 @@ reliable_mark_active_incoming(struct reliable *rel, struct buffer *buf,
  */
 
 void
-reliable_mark_active_outgoing(struct reliable *rel, struct buffer *buf, int opcode)
+reliable_mark_active_outgoing(struct reliable *rel, struct buffer *buf,
+                              int opcode, bool initial_response)
 {
-    int i;
-    for (i = 0; i < rel->size; ++i)
+    for (int i = 0; i < rel->size; ++i)
     {
         struct reliable_entry *e = &rel->array[i];
         if (buf == &e->buf)
@@ -731,6 +752,11 @@ reliable_mark_active_outgoing(struct reliable *rel, struct buffer *buf, int opco
             e->next_try = 0;
             e->timeout = rel->initial_timeout;
             dmsg(D_REL_DEBUG, "ACK mark active outgoing ID " packet_id_format, (packet_id_print_type)e->packet_id);
+
+            if (initial_response)
+            {
+                e->flags |= REL_FLAG_RESEND_INITIAL | REL_FLAG_RESEND_ALLOW;
+            }
             return;
         }
     }

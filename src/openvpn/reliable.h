@@ -66,19 +66,29 @@ struct reliable_ack
     packet_id_type packet_id[RELIABLE_ACK_SIZE];
 };
 
+
+/** Use logic for initial packet to resend. I.e. only allow to resend the
+ * packet if also the \c REL_FLAG_RESEND_ALLOW is set */
+#define REL_FLAG_RESEND_INITIAL     (1<<0)
+/** The peer has sent a packet, this allows resending of our reply */
+#define REL_FLAG_RESEND_ALLOW       (1<<1)
+
 /**
- * The structure in which the reliability layer stores a single incoming
- * or outgoing packet.
- */
+* The structure in which the reliability layer stores a single incoming
+* or outgoing packet.
+*/
 struct reliable_entry
 {
     bool active;
     interval_t timeout;
     time_t next_try;
     packet_id_type packet_id;
-    size_t n_acks;  /* Number of acks received for packets with higher PID.
-                     * Used for fast retransmission when there were at least
-                     * N_ACK_RETRANSMIT. */
+    size_t n_acks;  /**< Number of acks received for packets with higher PID.
+                     *  Used for fast retransmission when there were at least
+                     *  N_ACK_RETRANSMIT. */
+    unsigned int flags; /**< flags to control resending to avoid
+                          * sending more responses than client's initial
+                          * packets to avoid amplification */
     int opcode;
     struct buffer buf;
 };
@@ -378,8 +388,12 @@ struct buffer *reliable_get_buf_output_sequenced(struct reliable *rel);
  *     reliable_get_buf_output_sequenced() into which the packet has been
  *     copied.
  * @param opcode The packet's opcode.
+ * @param initial_response consider this packet an initial response to
+ *                         on a connection and apply non amplification
+ *                         retry rules
  */
-void reliable_mark_active_outgoing(struct reliable *rel, struct buffer *buf, int opcode);
+void reliable_mark_active_outgoing(struct reliable *rel, struct buffer *buf,
+                                   int opcode, bool initial_response);
 
 /** @} name Functions for inserting outgoing packets */
 
@@ -461,6 +475,14 @@ interval_t reliable_send_timeout(const struct reliable *rel);
  *     modified.
  */
 void reliable_schedule_now(struct reliable *rel);
+
+/**
+ * Marks all packets that are currently held back to avoid amplification
+ * as ready to be resend with the normal resend/timers.
+ * @param rel The reliable structure of which the entries should be
+ *     modified.
+ */
+void reliable_allow_reschedule_initial(struct reliable *rel);
 
 void reliable_debug_print(const struct reliable *rel, char *desc);
 
