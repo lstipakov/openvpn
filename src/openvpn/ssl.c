@@ -2731,8 +2731,15 @@ tls_process(struct tls_multi *multi,
                 ks->must_negotiate = now + session->opt->handshake_window;
                 ks->auth_deferred_expire = now + auth_deferred_expire_window(session->opt);
 
+                /* session id defined serves here as a proxy for this is a
+                 * response to a reset from the other side or our initial
+                 * packet */
+                bool initial_reply = ks->initial_opcode != P_CONTROL_SOFT_RESET_V1
+                    && session_id_defined(&ks->session_id_remote);
+
                 /* null buffer */
-                reliable_mark_active_outgoing(ks->send_reliable, buf, ks->initial_opcode);
+                reliable_mark_active_outgoing(ks->send_reliable, buf,
+                                              ks->initial_opcode, initial_reply);
                 INCR_GENERATED;
 
                 ks->state = S_PRE_START;
@@ -2968,7 +2975,7 @@ tls_process(struct tls_multi *multi,
                 }
                 if (status == 1)
                 {
-                    reliable_mark_active_outgoing(ks->send_reliable, buf, P_CONTROL_V1);
+                    reliable_mark_active_outgoing(ks->send_reliable, buf, P_CONTROL_V1, false);
                     INCR_GENERATED;
                     state_change = true;
                     dmsg(D_TLS_DEBUG, "Outgoing Ciphertext -> Reliable");
@@ -3652,6 +3659,11 @@ tls_pre_decrypt(struct tls_multi *multi,
 
     /* Let our caller know we processed a control channel packet */
     ret = true;
+
+    /* we we have a packet from the peer, allow another initial response
+     * to the packet, on the first packet the queue is empty so nothing
+     * happens */
+    reliable_allow_reschedule_initial(ks->send_reliable);
 
     /*
      * Set our remote address and remote session_id
