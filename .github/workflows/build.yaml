@@ -290,3 +290,5 @@ jobs:
             ${{ matrix.plat }}-Output/${{env.BUILD_CONFIGURATION}}/*.exe
             ${{ matrix.plat }}-Output/${{env.BUILD_CONFIGURATION}}/*.dll
             doc/openvpn.8.html
+            ${{ matrix.plat }}-Output/${{env.BUILD_CONFIGURATION}}/*.pdb
+
