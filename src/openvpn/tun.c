@@ -6363,7 +6363,9 @@ tuntap_dhcp_mask(const struct tuntap *tt, const char *device_guid)
             }
             else
             {
-                ep[2] = dhcp_masq_addr(tt->local, tt->remote_netmask, -1);
+                int prefix_len = netmask_to_netbits2(tt->adapter_netmask);
+                /* use network address as DHCP server for small subnets, otherwise last address before broadcast */
+                ep[2] = dhcp_masq_addr(tt->local, tt->remote_netmask, prefix_len < 28 ? -1 : 0);
             }
         }
         else
