@@ -201,6 +201,8 @@ packet_id_test(struct packet_id_rec *p,
 {
     packet_id_type diff;
 
+    p->retransmit = false;
+
     packet_id_debug(D_PID_DEBUG, p, pin, "PID_TEST", 0);
 
     ASSERT(p->initialized);
@@ -250,6 +252,7 @@ packet_id_test(struct packet_id_rec *p,
                 }
                 else
                 {
+                    p->retransmit = true;
                     /* raised from D_PID_DEBUG_LOW to reduce verbosity */
                     packet_id_debug(D_PID_DEBUG_MEDIUM, p, pin, "PID_ERR replay", diff);
                     return false;

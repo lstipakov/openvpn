@@ -1531,8 +1531,10 @@ read_control_auth(struct buffer *buf,
         openvpn_decrypt(buf, null, &ctx->opt, NULL, BPTR(buf));
         if (!buf->len)
         {
-            msg(D_TLS_ERRORS,
-                "TLS Error: incoming packet authentication failed from %s",
+            /* openvpn3 doesn't change packet-id on retransmit, this is
+             * likely the case so tune verbosity down */
+            int verb = ctx->opt.packet_id.rec.retransmit ? D_TLS_DEBUG : D_TLS_ERRORS;
+            msg(verb, "TLS Error: incoming packet authentication failed from %s",
                 print_link_socket_actual(from, &gc));
             goto cleanup;
         }

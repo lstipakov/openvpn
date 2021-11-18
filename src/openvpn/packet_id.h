@@ -141,6 +141,7 @@ struct packet_id_rec
     struct seq_list *seq_list; /* packet-id "memory" */
     const char *name;
     int unit;
+    bool retransmit;          /* true if last packet is suspected retransmit */
 };
 
 /*

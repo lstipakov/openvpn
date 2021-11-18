@@ -335,7 +335,10 @@ crypto_check_replay(struct crypto_options *opt,
     {
         if (!(opt->flags & CO_MUTE_REPLAY_WARNINGS))
         {
-            msg(D_REPLAY_ERRORS, "%s: bad packet ID (may be a replay): %s -- "
+            /* openvpn3 doesn't change packet-id on retransmit, this is
+             * likely the case so tune verbosity down */
+            int verb = opt->packet_id.rec.retransmit ? D_PID_DEBUG : D_REPLAY_ERRORS;
+            msg(verb, "%s: bad packet ID (may be a %s): %s -- "
                 "see the man page entry for --no-replay and --replay-window for "
                 "more info or silence this warning with --mute-replay-warnings",
                 error_prefix, packet_id_net_print(pin, true, gc));
