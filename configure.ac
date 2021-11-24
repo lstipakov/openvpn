@@ -777,29 +777,22 @@ PKG_CHECK_MODULES(
 
 if test "$enable_dco" = "yes"; then
 dnl
-dnl  Configure path for the ovpn-dco kernel module source directory.
+dnl  Configure path for the ovpn-dco header directory.
 dnl
-dnl  This is similar to the core librariy, there is an embedded
-dnl  version in this tree which will be used by default.  The
-dnl  git checkout inside the ovpn-dco/ directory is managed via git
-dnl  submodule.
-dnl
-	AC_ARG_VAR([DCO_SOURCEDIR], [Alternative ovpn-dco kernel module source directory])
-	if test -z "${DCO_SOURCEDIR}"; then
-		case "$host" in
-			*-mingw*) DCO_SOURCEDIR="${srcdir}/../ovpn-dco-win";;
-			*) DCO_SOURCEDIR="${srcdir}/../ovpn-dco";;
-		esac
+	AC_ARG_VAR([DCO_INCLUDEDIR], [ovpn-dco header directory (where to find ovpn-dco.h)])
+	if test -z "${DCO_INCLUDEDIR}"; then
+		AC_MSG_ERROR([You must specify DCO_INCLUDEDIR when using --enable-dco.])
+
 	fi
-	AC_MSG_NOTICE([Using ovpn-dco source directory: ${DCO_SOURCEDIR}])
-	AC_SUBST([DCO_SOURCEDIR])
+
+	AC_MSG_NOTICE([Using ovpn-dco header directory: ${DCO_INCLUDEDIR}])
+	DCO_CFLAGS="-I${DCO_INCLUDEDIR}"
 
 	case "$host" in
 		*-*-linux*)
 dnl
 dnl Include generic netlink library used to talk to ovpn-dco
 dnl
-			saved_CFLAGS="${CFLAGS}"
 			PKG_CHECK_MODULES(
 				[LIBNL_GENL],
 				[libnl-genl-3.0 >= 3.2.29],
@@ -807,16 +800,12 @@ dnl
 				[AC_MSG_ERROR([libnl-genl-3.0 package not found or too old. Is the development package and pkg-config installed? Must be version 3.4.0 or newer])]
 			)
 
-			DCO_CFLAGS="-I${DCO_SOURCEDIR}/include/uapi ${LIBNL_GENL_CFLAGS}"
-
-			CFLAGS="${CFLAGS} ${DCO_CFLAGS}"
+			CFLAGS="${CFLAGS} ${DCO_CFLAGS} ${LIBNL_GENL_CFLAGS}"
 			AC_CHECK_HEADERS(
 				[linux/ovpn_dco.h],
 				,
-				[AC_MSG_ERROR([linux/ovpn_dco.h is missing (use DCO_SOURCE to set path to it, CFLAGS=${CFLAGS})])]
+				[AC_MSG_ERROR([linux/ovpn_dco.h couldn't be found (use DCO_INCLUDEDIR to set the path to it, CFLAGS=${CFLAGS})])]
 			)
-			CFLAGS=${saved_CFLAGS}
-
 			OPTIONAL_DCO_LIBS="${LIBNL_GENL_LIBS}"
 
 			AC_DEFINE(ENABLE_LINUXDCO, 1, [Enable linux data channel offload])
@@ -1407,7 +1396,6 @@ AC_SUBST([OPTIONAL_PKCS11_HELPER_CFLAGS])
 AC_SUBST([OPTIONAL_PKCS11_HELPER_LIBS])
 AC_SUBST([OPTIONAL_INOTIFY_CFLAGS])
 AC_SUBST([OPTIONAL_INOTIFY_LIBS])
-AC_SUBST([OPTIONAL_DCO_CFLAGS])
 AC_SUBST([OPTIONAL_DCO_LIBS])
 
 AC_SUBST([PLUGIN_AUTH_PAM_CFLAGS])
