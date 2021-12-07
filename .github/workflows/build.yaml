@@ -240,7 +240,7 @@ jobs:
         uses: lukka/run-vcpkg@v7.4
         with:
           vcpkgGitCommitId: 'a2fcb03749ff5897b5985092934dc6057680c789'
-          vcpkgArguments: 'openssl lz4 lzo pkcs11-helper tap-windows6'
+          vcpkgArguments: 'openssl lz4 lzo pkcs11-helper tap-windows6 ovpn-dco-win'
           vcpkgTriplet: '${{ matrix.triplet }}-windows-ovpn'
           cleanAfterBuild: false
 
