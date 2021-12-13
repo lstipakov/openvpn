@@ -6,6 +6,7 @@ export LD_LIBRARY_PATH="${PREFIX}/lib:${LD_LIBRARY_PATH:-}"
 autoreconf -vi
 
 if [ -z ${CHOST+x} ]; then
+	export DCO_INCLUDEDIR="$(realpath download-cache/ovpn-dco/include/uapi)"
 	./configure --with-crypto-library="${SSLLIB}" ${EXTRA_CONFIG:-} || (cat config.log && exit 1)
 	make -j$JOBS
 	src/openvpn/openvpn --version || true

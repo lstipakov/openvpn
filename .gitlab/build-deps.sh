@@ -4,6 +4,17 @@ set -eux
 # Set defaults
 PREFIX="${PREFIX:-${HOME}/opt}"
 
+download_ovpn_dco() {
+    if [ ! -d "download-cache/ovpn-dco" ]; then
+       git clone https://gitlab.com/openvpn/ovpn-dco.git download-cache/ovpn-dco
+       exit 0
+    fi
+
+    cd download-cache/ovpn-dco
+    git remote update -p
+    git reset --hard origin/master
+}
+
 download_tap_windows () {
     if [ ! -f "download-cache/tap-windows-${TAP_WINDOWS_VERSION}.zip" ]; then
        wget -P download-cache/ \
@@ -154,4 +165,6 @@ if [ ! -z ${CHOST+x} ]; then
 
       download_pkcs11_helper
       build_pkcs11_helper
+else
+      download_ovpn_dco
 fi
