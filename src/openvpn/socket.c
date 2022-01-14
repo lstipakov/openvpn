@@ -3762,12 +3762,12 @@ socket_send_queue(struct link_socket *sock, struct buffer *buf, const struct lin
     return sock->writes.iostate;
 }
 
-/* Returns the nubmer of bytes successfully read */
+/* Returns the number of bytes successfully read */
 int
-socket_finalize(SOCKET s,
-                struct overlapped_io *io,
-                struct buffer *buf,
-                struct link_socket_actual *from)
+sockethandle_finalize(sockethandle sh,
+                      struct overlapped_io *io,
+                      struct buffer *buf,
+                      struct link_socket_actual *from)
 {
     int ret = -1;
     BOOL status;
@@ -3775,13 +3775,7 @@ socket_finalize(SOCKET s,
     switch (io->iostate)
     {
         case IOSTATE_QUEUED:
-            status = WSAGetOverlappedResult(
-                s,
-                &io->overlapped,
-                &io->size,
-                FALSE,
-                &io->flags
-                );
+            status = SocketHandleGetOverlappedResult(sh, &io);
             if (status)
             {
                 /* successful return for a queued operation */
@@ -3793,18 +3787,18 @@ socket_finalize(SOCKET s,
                 io->iostate = IOSTATE_INITIAL;
                 ASSERT(ResetEvent(io->overlapped.hEvent));
 
-                dmsg(D_WIN32_IO, "WIN32 I/O: Socket Completion success [%d]", ret);
+                dmsg(D_WIN32_IO, "WIN32 I/O: Completion success [%d]", ret);
             }
             else
             {
                 /* error during a queued operation */
                 ret = -1;
-                if (WSAGetLastError() != WSA_IO_INCOMPLETE)
+                if (SocketHandleGetLastError(sh) != ERROR_IO_INCOMPLETE)
                 {
                     /* if no error (i.e. just not finished yet), then DON'T execute this code */
                     io->iostate = IOSTATE_INITIAL;
                     ASSERT(ResetEvent(io->overlapped.hEvent));
-                    msg(D_WIN32_IO | M_ERRNO, "WIN32 I/O: Socket Completion error");
+                    msg(D_WIN32_IO | M_ERRNO, "WIN32 I/O: Completion error");
                 }
             }
             break;
@@ -3815,9 +3809,9 @@ socket_finalize(SOCKET s,
             if (io->status)
             {
                 /* error return for a non-queued operation */
-                WSASetLastError(io->status);
+                SocketHandleSetLastError(sh, io->status);
                 ret = -1;
-                msg(D_WIN32_IO | M_ERRNO, "WIN32 I/O: Socket Completion non-queued error");
+                msg(D_WIN32_IO | M_ERRNO, "WIN32 I/O: Completion non-queued error");
             }
             else
             {
@@ -3827,14 +3821,14 @@ socket_finalize(SOCKET s,
                     *buf = io->buf;
                 }
                 ret = io->size;
-                dmsg(D_WIN32_IO, "WIN32 I/O: Socket Completion non-queued success [%d]", ret);
+                dmsg(D_WIN32_IO, "WIN32 I/O: Completion non-queued success [%d]", ret);
             }
             break;
 
         case IOSTATE_INITIAL: /* were we called without proper queueing? */
-            WSASetLastError(WSAEINVAL);
+            SocketHandleSetInvalError(sh);
             ret = -1;
-            dmsg(D_WIN32_IO, "WIN32 I/O: Socket Completion BAD STATE");
+            dmsg(D_WIN32_IO, "WIN32 I/O: Completion BAD STATE");
             break;
 
         default:
@@ -3842,7 +3836,7 @@ socket_finalize(SOCKET s,
     }
 
     /* return from address if requested */
-    if (from)
+    if (!sh.is_handle && from)
     {
         if (ret >= 0 && io->addr_defined)
         {
