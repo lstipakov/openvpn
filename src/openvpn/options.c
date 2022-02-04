@@ -6268,7 +6268,16 @@ add_option(struct options *options,
         options->inactivity_timeout = positive_atoi(p[1]);
         if (p[2])
         {
-            options->inactivity_minimum_bytes = positive_atoi(p[2]);
+            const int64_t val = atoll(p[2]);
+            options->inactivity_minimum_bytes = (val < 0) ? 0 : val;
+            if (options->inactivity_minimum_bytes >= INT_MAX)
+            {
+                msg(M_WARN, "NOTE: inactivity [bytes] (%" PRIu64 ") is larger "
+                    "than INT_MAX (%d), previous versions ignored it",
+                    options->inactivity_minimum_bytes,
+                    INT_MAX,
+                    options->verbosity);
+            }
         }
     }
     else if (streq(p[0], "proto") && p[1] && !p[2])
