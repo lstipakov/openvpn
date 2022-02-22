@@ -407,7 +407,7 @@ set_sock_extended_error_passing(int sd)
     int on = 1;
     if (setsockopt(sd, SOL_IP, IP_RECVERR, (void *) &on, sizeof(on)))
     {
-        msg(M_WARN | M_ERRNO,
+        msg(M_WARN | M_SKERR,
             "Note: enable extended error passing on TCP/UDP socket failed (IP_RECVERR)");
     }
 }

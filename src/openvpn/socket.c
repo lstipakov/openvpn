@@ -1143,7 +1143,7 @@ create_socket(struct link_socket *sock, struct addrinfo *addr)
         msg(M_INFO, "Using bind-dev %s", sock->bind_dev);
         if (setsockopt(sock->sd, SOL_SOCKET, SO_BINDTODEVICE, sock->bind_dev, strlen(sock->bind_dev) + 1) != 0)
         {
-            msg(M_WARN|M_ERRNO, "WARN: setsockopt SO_BINDTODEVICE=%s failed", sock->bind_dev);
+            msg(M_WARN|M_SKERR, "WARN: setsockopt SO_BINDTODEVICE=%s failed", sock->bind_dev);
         }
 
     }
@@ -1222,7 +1222,7 @@ socket_do_accept(socket_descriptor_t sd,
 
         if (!socket_defined(new_sd))
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "TCP: getpeername() failed");
+            msg(D_LINK_ERRORS | M_SKERR, "TCP: getpeername() failed");
         }
         else
         {
@@ -1247,7 +1247,7 @@ socket_do_accept(socket_descriptor_t sd,
 
     if (!socket_defined(new_sd))
     {
-        msg(D_LINK_ERRORS | M_ERRNO, "TCP: accept(%d) failed", (int)sd);
+        msg(D_LINK_ERRORS | M_SKERR, "TCP: accept(%d) failed", (int)sd);
     }
     /* only valid if we have remote_len_af!=0 */
     else if (remote_len_af && remote_len != remote_len_af)
@@ -1313,7 +1313,7 @@ socket_listen_accept(socket_descriptor_t sd,
 
         if (status < 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "TCP: select() failed");
+            msg(D_LINK_ERRORS | M_SKERR, "TCP: select() failed");
         }
 
         if (status <= 0)
@@ -1409,12 +1409,12 @@ socket_bind(socket_descriptor_t sd,
         msg(M_INFO, "setsockopt(IPV6_V6ONLY=%d)", v6only);
         if (setsockopt(sd, IPPROTO_IPV6, IPV6_V6ONLY, (void *) &v6only, sizeof(v6only)))
         {
-            msg(M_NONFATAL|M_ERRNO, "Setting IPV6_V6ONLY=%d failed", v6only);
+            msg(M_NONFATAL | M_SKERR, "Setting IPV6_V6ONLY=%d failed", v6only);
         }
     }
     if (bind(sd, cur->ai_addr, cur->ai_addrlen))
     {
-        msg(M_FATAL | M_ERRNO, "%s: Socket bind failed on local address %s",
+        msg(M_FATAL | M_SKERR, "%s: Socket bind failed on local address %s",
             prefix,
             print_sockaddr_ex(local->ai_addr, ":", PS_SHOW_PORT, &gc));
     }
@@ -2254,7 +2254,7 @@ link_socket_close(struct link_socket *sock)
                 msg(D_LOW, "TCP/UDP: Closing socket");
                 if (openvpn_close_socket(sock->sd))
                 {
-                    msg(M_WARN | M_ERRNO, "TCP/UDP: Close Socket failed");
+                    msg(M_WARN | M_SKERR, "TCP/UDP: Close Socket failed");
                 }
             }
             sock->sd = SOCKET_UNDEFINED;
@@ -2271,7 +2271,7 @@ link_socket_close(struct link_socket *sock)
         {
             if (openvpn_close_socket(sock->ctrl_sd))
             {
-                msg(M_WARN | M_ERRNO, "TCP/UDP: Close Socket (ctrl_sd) failed");
+                msg(M_WARN | M_SKERR, "TCP/UDP: Close Socket (ctrl_sd) failed");
             }
             sock->ctrl_sd = SOCKET_UNDEFINED;
         }
@@ -3668,7 +3668,7 @@ sockethandle_finalize(sockethandle_t sh,
                     /* if no error (i.e. just not finished yet), then DON'T execute this code */
                     io->iostate = IOSTATE_INITIAL;
                     ASSERT(ResetEvent(io->overlapped.hEvent));
-                    msg(D_WIN32_IO | M_ERRNO, "WIN32 I/O: Completion error");
+                    msg(D_WIN32_IO | SocketHandleErrorFlag(sh), "WIN32 I/O: Completion error");
                 }
             }
             break;
@@ -3681,7 +3681,7 @@ sockethandle_finalize(sockethandle_t sh,
                 /* error return for a non-queued operation */
                 SocketHandleSetLastError(sh, io->status);
                 ret = -1;
-                msg(D_WIN32_IO | M_ERRNO, "WIN32 I/O: Completion non-queued error");
+                msg(D_WIN32_IO | SocketHandleErrorFlag(sh), "WIN32 I/O: Completion non-queued error");
             }
             else
             {

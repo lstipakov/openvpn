@@ -429,7 +429,7 @@ proxy_entry_new(struct proxy_connection **list,
     /* connect to port share server */
     if ((sd_server = socket(PF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0)
     {
-        msg(M_WARN|M_ERRNO, "PORT SHARE PROXY: cannot create socket");
+        msg(M_WARN|M_SKERR, "PORT SHARE PROXY: cannot create socket");
         return false;
     }
     status = openvpn_connect(sd_server,(const struct sockaddr *)  &server_addr, 5, NULL);

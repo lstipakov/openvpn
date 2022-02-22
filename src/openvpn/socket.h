@@ -301,6 +301,12 @@ SocketHandleSetInvalError(sockethandle_t sh)
     sh.is_handle ? SetLastError(ERROR_INVALID_FUNCTION) : WSASetLastError(WSAEINVAL);
 }
 
+static inline int
+SocketHandleErrorFlag(sockethandle_t sh)
+{
+    return sh.is_handle ? M_ERRNO : M_SKERR;
+}
+
 #else  /* ifdef _WIN32 */
 
 #define openvpn_close_socket(s) close(s)

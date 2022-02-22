@@ -99,8 +99,17 @@ extern int x_msg_line_num;
 #define M_NONFATAL        (1<<5)         /* non-fatal error */
 #define M_WARN            (1<<6)         /* call syslog with LOG_WARNING */
 #define M_DEBUG           (1<<7)
-
 #define M_ERRNO           (1<<8)         /* show errno description */
+
+#ifdef _WIN32
+#define M_WSAERR          (1<<9)         /* WinSock errors */
+#endif
+
+#ifdef _WIN32
+#define M_SKERR           (M_ERRNO | M_WSAERR) /* socket errors */
+#else
+#define M_SKERR           M_ERRNO
+#endif
 
 #define M_NOMUTE          (1<<11)        /* don't do mute processing */
 #define M_NOPREFIX        (1<<12)        /* don't show date/time prefix */

@@ -1890,13 +1890,13 @@ man_connect(struct management *man)
 #if UNIX_SOCK_SUPPORT
         if (man->settings.flags & MF_UNIX_SOCK)
         {
-            msg(D_LINK_ERRORS | M_ERRNO,
+            msg(D_LINK_ERRORS | M_SKERR,
                 "MANAGEMENT: connect to unix socket %s failed",
                 sockaddr_unix_name(&man->settings.local_unix, "NULL"));
         }
         else
 #endif
-        msg(D_LINK_ERRORS | M_ERRNO,
+        msg(D_LINK_ERRORS | M_SKERR,
             "MANAGEMENT: connect to %s failed",
             print_sockaddr(man->settings.local->ai_addr, &gc));
         throw_signal_soft(SIGTERM, "management-connect-failed");

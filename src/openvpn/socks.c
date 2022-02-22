@@ -117,7 +117,7 @@ socks_username_password_auth(struct socks_proxy_info *p,
 
     if (size != strlen(to_send))
     {
-        msg(D_LINK_ERRORS | M_ERRNO, "socks_username_password_auth: TCP port write failed on send()");
+        msg(D_LINK_ERRORS | M_SKERR, "socks_username_password_auth: TCP port write failed on send()");
         goto cleanup;
     }
 
@@ -145,14 +145,14 @@ socks_username_password_auth(struct socks_proxy_info *p,
         /* timeout? */
         if (status == 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "socks_username_password_auth: TCP port read timeout expired");
+            msg(D_LINK_ERRORS | M_SKERR, "socks_username_password_auth: TCP port read timeout expired");
             goto cleanup;
         }
 
         /* error */
         if (status < 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "socks_username_password_auth: TCP port read failed on select()");
+            msg(D_LINK_ERRORS | M_SKERR, "socks_username_password_auth: TCP port read failed on select()");
             goto cleanup;
         }
 
@@ -162,7 +162,7 @@ socks_username_password_auth(struct socks_proxy_info *p,
         /* error? */
         if (size != 1)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "socks_username_password_auth: TCP port read failed on recv()");
+            msg(D_LINK_ERRORS | M_SKERR, "socks_username_password_auth: TCP port read failed on recv()");
             goto cleanup;
         }
 
@@ -204,7 +204,7 @@ socks_handshake(struct socks_proxy_info *p,
     size = send(sd, method_sel, sizeof(method_sel), MSG_NOSIGNAL);
     if (size != sizeof(method_sel))
     {
-        msg(D_LINK_ERRORS | M_ERRNO, "socks_handshake: TCP port write failed on send()");
+        msg(D_LINK_ERRORS | M_SKERR, "socks_handshake: TCP port write failed on send()");
         return false;
     }
 
@@ -232,14 +232,14 @@ socks_handshake(struct socks_proxy_info *p,
         /* timeout? */
         if (status == 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "socks_handshake: TCP port read timeout expired");
+            msg(D_LINK_ERRORS | M_SKERR, "socks_handshake: TCP port read timeout expired");
             return false;
         }
 
         /* error */
         if (status < 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "socks_handshake: TCP port read failed on select()");
+            msg(D_LINK_ERRORS | M_SKERR, "socks_handshake: TCP port read failed on select()");
             return false;
         }
 
@@ -249,7 +249,7 @@ socks_handshake(struct socks_proxy_info *p,
         /* error? */
         if (size != 1)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "socks_handshake: TCP port read failed on recv()");
+            msg(D_LINK_ERRORS | M_SKERR, "socks_handshake: TCP port read failed on recv()");
             return false;
         }
 
@@ -342,14 +342,14 @@ recv_socks_reply(socket_descriptor_t sd,
         /* timeout? */
         if (status == 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "recv_socks_reply: TCP port read timeout expired");
+            msg(D_LINK_ERRORS | M_SKERR, "recv_socks_reply: TCP port read timeout expired");
             return false;
         }
 
         /* error */
         if (status < 0)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "recv_socks_reply: TCP port read failed on select()");
+            msg(D_LINK_ERRORS | M_SKERR, "recv_socks_reply: TCP port read failed on select()");
             return false;
         }
 
@@ -359,7 +359,7 @@ recv_socks_reply(socket_descriptor_t sd,
         /* error? */
         if (size != 1)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "recv_socks_reply: TCP port read failed on recv()");
+            msg(D_LINK_ERRORS | M_SKERR, "recv_socks_reply: TCP port read failed on recv()");
             return false;
         }
 
@@ -484,7 +484,7 @@ establish_socks_proxy_passthru(struct socks_proxy_info *p,
         const ssize_t size = send(sd, buf, 5 + len + 2, MSG_NOSIGNAL);
         if ((int)size != 5 + (int)len + 2)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "establish_socks_proxy_passthru: TCP port write failed on send()");
+            msg(D_LINK_ERRORS | M_SKERR, "establish_socks_proxy_passthru: TCP port write failed on send()");
             goto error;
         }
     }
@@ -527,7 +527,7 @@ establish_socks_proxy_udpassoc(struct socks_proxy_info *p,
                                   10, MSG_NOSIGNAL);
         if (size != 10)
         {
-            msg(D_LINK_ERRORS | M_ERRNO, "establish_socks_proxy_passthru: TCP port write failed on send()");
+            msg(D_LINK_ERRORS | M_SKERR, "establish_socks_proxy_passthru: TCP port write failed on send()");
             goto error;
         }
     }

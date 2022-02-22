@@ -110,7 +110,7 @@ recv_line(socket_descriptor_t sd,
         {
             if (verbose)
             {
-                msg(D_LINK_ERRORS | M_ERRNO, "recv_line: TCP port read timeout expired");
+                msg(D_LINK_ERRORS | M_SKERR, "recv_line: TCP port read timeout expired");
             }
             goto error;
         }
@@ -120,7 +120,7 @@ recv_line(socket_descriptor_t sd,
         {
             if (verbose)
             {
-                msg(D_LINK_ERRORS | M_ERRNO, "recv_line: TCP port read failed on select()");
+                msg(D_LINK_ERRORS | M_SKERR, "recv_line: TCP port read failed on select()");
             }
             goto error;
         }
@@ -133,7 +133,7 @@ recv_line(socket_descriptor_t sd,
         {
             if (verbose)
             {
-                msg(D_LINK_ERRORS | M_ERRNO, "recv_line: TCP port read failed on recv()");
+                msg(D_LINK_ERRORS | M_SKERR, "recv_line: TCP port read failed on recv()");
             }
             goto error;
         }
@@ -199,7 +199,7 @@ send_line(socket_descriptor_t sd,
     const ssize_t size = send(sd, buf, strlen(buf), MSG_NOSIGNAL);
     if (size != (ssize_t) strlen(buf))
     {
-        msg(D_LINK_ERRORS | M_ERRNO, "send_line: TCP port write failed on send()");
+        msg(D_LINK_ERRORS | M_SKERR, "send_line: TCP port write failed on send()");
         return false;
     }
     return true;
