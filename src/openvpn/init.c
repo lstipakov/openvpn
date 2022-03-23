@@ -2341,14 +2341,31 @@ do_deferred_options(struct context *c, const unsigned int found)
             return false;
         }
 
-        /* Check if the pushed options are compatible with DCO if we have DCO
-         * enabled */
-        if (dco_enabled(&c->options) && !check_dco_pull_options(&c->options))
+        if (dco_enabled(&c->options))
         {
-            msg(D_TLS_ERRORS, "OPTIONS ERROR: pushed options are incompatible with "
-                              "data channel offload. Use --disable-dco to connect"
-                              "to this server");
-            return false;
+            /* Check if the pushed options are compatible with DCO if we have
+             * DCO enabled */
+            if (!check_dco_pull_options(&c->options))
+            {
+                msg(D_TLS_ERRORS, "OPTIONS ERROR: pushed options are incompatible with "
+                    "data channel offload. Use --disable-dco to connect"
+                    "to this server");
+                return false;
+            }
+
+            if (c->options.ping_send_timeout || c->c2.frame.mss_fix)
+            {
+                int ret = dco_set_peer(&c->c1.tuntap->dco,
+                                       c->c2.tls_multi->peer_id,
+                                       c->options.ping_send_timeout,
+                                       c->options.ping_rec_timeout,
+                                       c->c2.frame.mss_fix);
+                if (ret < 0)
+                {
+                    msg(D_DCO, "Cannot set DCO peer: %s", strerror(-ret));
+                    return false;
+                }
+            }
         }
     }
     return true;

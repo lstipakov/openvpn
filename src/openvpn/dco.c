@@ -137,12 +137,6 @@ dco_multi_add_new_peer(struct multi_context *m, struct multi_instance *mi)
 
     c->c2.tls_multi->dco_peer_added = true;
 
-    if (c->options.ping_send_timeout)
-    {
-        ovpn_set_peer(&c->c1.tuntap->dco, peer_id, c->options.ping_send_timeout,
-                      c->options.ping_rec_timeout);
-    }
-
     if (c->mode == CM_CHILD_TCP)
     {
         multi_tcp_dereference_instance(m->mtcp, mi);
@@ -229,13 +223,6 @@ dco_p2p_add_new_peer(struct context *c)
 
         c->c2.tls_multi->dco_peer_added = true;
         c->c2.link_socket->info.dco_installed = true;
-    }
-
-    if (c->options.ping_send_timeout)
-    {
-        ovpn_set_peer(&c->c1.tuntap->dco, multi->peer_id,
-                      c->options.ping_send_timeout,
-                      c->options.ping_rec_timeout);
     }
 
     return 0;

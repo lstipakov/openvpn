@@ -589,11 +589,11 @@ nla_put_failure:
 }
 
 int
-ovpn_set_peer(dco_context_t *dco, unsigned int peerid,
-	      unsigned int keepalive_interval, unsigned int keepalive_timeout)
+dco_set_peer(dco_context_t *dco, unsigned int peerid,
+             int keepalive_interval, int keepalive_timeout, int mss)
 {
-    msg(D_DCO_DEBUG, "%s: peer-id %d, keepalive %d/%d", __func__, peerid,
-                     keepalive_interval, keepalive_timeout);
+    msg(D_DCO_DEBUG, "%s: peer-id %d, keepalive %d/%d, mss %d", __func__,
+        peerid, keepalive_interval, keepalive_timeout, mss);
 
     struct nl_msg *nl_msg = ovpn_dco_nlmsg_create(dco, OVPN_CMD_SET_PEER);
     if (!nl_msg)

@@ -2324,6 +2324,19 @@ multi_client_generate_tls_keys(struct multi_context *m, struct multi_instance *m
         return false;
     }
 
+    if (dco_enabled(&c->options) && (c->options.ping_send_timeout || c->c2.frame.mss_fix))
+    {
+        int ret = dco_set_peer(&c->c1.tuntap->dco, c->c2.tls_multi->peer_id,
+                               c->options.ping_send_timeout,
+                               c->options.ping_rec_timeout,
+                               c->c2.frame.mss_fix);
+        if (ret < 0)
+        {
+            msg(D_DCO, "Cannot set DCO peer: %s", strerror(-ret));
+            return false;
+        }
+    }
+
     return true;
 }
 
