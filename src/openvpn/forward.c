@@ -860,6 +860,13 @@ read_incoming_link(struct context *c)
     /* check recvfrom status */
     check_status(status, "read", c->c2.link_socket, NULL);
 
+#ifdef _WIN32
+    if (dco_enabled(&c->options) && (status < 0) && (openvpn_errno() == ERROR_NETNAME_DELETED))
+    {
+        trigger_ping_timeout_signal(c);
+    }
+#endif
+
     /* Remove socks header if applicable */
     socks_postprocess_incoming_link(c);
 
@@ -1659,6 +1666,7 @@ process_outgoing_link(struct context *c)
                 socks_preprocess_outgoing_link(c, &to_addr, &size_delta);
 
                 /* Send packet */
+#ifdef TARGET_LINUX
                 if (c->c2.link_socket->info.dco_installed)
                 {
                     size = dco_do_write(&c->c1.tuntap->dco,
@@ -1666,6 +1674,7 @@ process_outgoing_link(struct context *c)
                                         &c->c2.to_link);
                 }
                 else
+#endif
                 {
                     size = link_socket_write(c->c2.link_socket, &c->c2.to_link,
                                              to_addr);
