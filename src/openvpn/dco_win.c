@@ -42,7 +42,7 @@
 const IN_ADDR in4addr_any = { 0 };
 #endif
 
-static struct tuntap
+struct tuntap
 create_dco_handle(const char *devname, struct gc_arena *gc)
 {
     struct tuntap tt = { .windows_driver = WINDOWS_DRIVER_DCO };
@@ -157,10 +157,9 @@ dco_connect_wait(HANDLE handle, OVERLAPPED *ov, int timeout, volatile int *signa
     return -1;
 }
 
-struct tuntap
-dco_create_socket(struct addrinfo *remoteaddr, bool bind_local,
-                  struct addrinfo *bind, const char *devname,
-                  struct gc_arena *gc, int timeout,
+bool
+dco_create_socket(HANDLE handle, struct addrinfo *remoteaddr, bool bind_local,
+                  struct addrinfo *bind, int timeout,
                   volatile int *signal_received)
 {
     msg(D_DCO_DEBUG, "%s", __func__);
@@ -232,10 +231,8 @@ dco_create_socket(struct addrinfo *remoteaddr, bool bind_local,
         ASSERT(0);
     }
 
-    struct tuntap tt = create_dco_handle(devname, gc);
-
     OVERLAPPED ov = { 0 };
-    if (!DeviceIoControl(tt.hand, OVPN_IOCTL_NEW_PEER, &peer, sizeof(peer), NULL, 0, NULL, &ov))
+    if (!DeviceIoControl(handle, OVPN_IOCTL_NEW_PEER, &peer, sizeof(peer), NULL, 0, NULL, &ov))
     {
         DWORD err = GetLastError();
         if (err != ERROR_IO_PENDING)
@@ -244,13 +241,13 @@ dco_create_socket(struct addrinfo *remoteaddr, bool bind_local,
         }
         else
         {
-            if (dco_connect_wait(tt.hand, &ov, timeout, signal_received) < 0)
+            if (dco_connect_wait(handle, &ov, timeout, signal_received) < 0)
             {
-                close_tun_handle(&tt);
+                return false;
             }
         }
     }
-    return tt;
+    return true;
 }
 
 int
@@ -265,7 +262,15 @@ dco_new_peer(dco_context_t *dco, unsigned int peerid, int sd,
 int
 dco_del_peer(dco_context_t *dco, unsigned int peerid)
 {
-    msg(D_DCO_DEBUG, "%s: peer-id %d - not implemented", __func__, peerid);
+    msg(D_DCO_DEBUG, "%s: peer-id %d", __func__, peerid);
+
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_DEL_PEER, NULL,
+                         0, NULL, 0, &bytes_returned, NULL))
+    {
+        msg(M_WARN | M_ERRNO, "DeviceIoControl(OVPN_IOCTL_DEL_PEER) failed");
+        return -1;
+    }
     return 0;
 }
 
