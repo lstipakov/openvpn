@@ -45,6 +45,7 @@
 #include "pool.h"
 #include "plugin.h"
 #include "manage.h"
+#include "dco.h"
 
 /*
  * Our global key schedules, packaged thusly
@@ -201,6 +202,8 @@ struct context_1
     struct user_pass *auth_user_pass;
     /**< Username and password for
      *   authentication. */
+
+    dco_context_t dco;
 };
 
 

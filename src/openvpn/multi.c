@@ -2442,7 +2442,7 @@ multi_client_connect_late_setup(struct multi_context *m,
 
             if (mi->context.options.ping_send_timeout || mi->context.c2.frame.mss_fix)
             {
-                int ret = dco_set_peer(&mi->context.c1.tuntap->dco,
+                int ret = dco_set_peer(&mi->context.c1.dco,
                                        mi->context.c2.tls_multi->peer_id,
                                        mi->context.options.ping_send_timeout,
                                        mi->context.options.ping_rec_timeout,
@@ -3230,11 +3230,11 @@ process_incoming_del_peer(struct multi_context *m, struct multi_instance *mi,
 bool
 multi_process_incoming_dco(struct multi_context *m)
 {
-    dco_context_t *dco = &m->top.c1.tuntap->dco;
+    dco_context_t *dco = &m->top.c1.dco;
 
     struct multi_instance *mi = NULL;
 
-    int ret = dco_do_read(&m->top.c1.tuntap->dco);
+    int ret = dco_do_read(dco);
 
     int peer_id = dco->dco_message_peer_id;
 

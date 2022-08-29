@@ -82,14 +82,14 @@ dco_wait_ready(DWORD idx)
 }
 
 void
-dco_start_tun(struct tuntap *tt)
+dco_start_tun(struct tuntap *tt, dco_context_t *dco)
 {
     msg(D_DCO_DEBUG, "%s", __func__);
 
     /* reference the tt object inside the DCO context, because the latter will
      * be passed around
      */
-    tt->dco.tt = tt;
+    dco->tt = tt;
 
     DWORD bytes_returned = 0;
     if (!DeviceIoControl(tt->hand, OVPN_IOCTL_START_VPN, NULL, 0, NULL, 0,

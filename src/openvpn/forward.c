@@ -150,7 +150,7 @@ check_dco_key_status(struct context *c)
         return;
     }
 
-    dco_update_keys(&c->c1.tuntap->dco, c->c2.tls_multi);
+    dco_update_keys(&c->c1.dco, c->c2.tls_multi);
 }
 
 /*
@@ -1123,7 +1123,7 @@ process_incoming_dco(struct context *c)
 {
 #if defined(ENABLE_DCO) && (defined(TARGET_LINUX) || defined(TARGET_FREEBSD))
     struct link_socket_info *lsi = get_link_socket_info(c);
-    dco_context_t *dco = &c->c1.tuntap->dco;
+    dco_context_t *dco = &c->c1.dco;
 
     dco_do_read(dco);
 
@@ -1696,7 +1696,7 @@ process_outgoing_link(struct context *c)
                 /* Send packet */
                 if (should_use_dco_socket(c->c2.link_socket))
                 {
-                    size = dco_do_write(&c->c1.tuntap->dco,
+                    size = dco_do_write(&c->c1.dco,
                                         c->c2.tls_multi->peer_id,
                                         &c->c2.to_link);
                 }
@@ -2087,7 +2087,7 @@ io_wait_dowork(struct context *c, const unsigned int flags)
 #if defined(TARGET_LINUX) || defined(TARGET_FREEBSD)
     if (socket & EVENT_READ && c->c2.did_open_tun)
     {
-        dco_event_set(&c->c1.tuntap->dco, c->c2.event_set, (void *)&dco_shift);
+        dco_event_set(&c->c1.dco, c->c2.event_set, (void *)&dco_shift);
     }
 #endif
 

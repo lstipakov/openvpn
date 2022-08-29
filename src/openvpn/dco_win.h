@@ -43,12 +43,12 @@ dco_create_socket(struct addrinfo *remoteaddr, bool bind_local,
                   volatile int *signal_received);
 
 void
-dco_start_tun(struct tuntap *tt);
+dco_start_tun(struct tuntap *tt, dco_context_t *dco);
 
 #else /* if defined(ENABLE_DCO) && defined(_WIN32) */
 
 static inline void
-dco_start_tun(struct tuntap *tt)
+dco_start_tun(struct tuntap *tt, dco_context_t *dco)
 {
     ASSERT(false);
 }

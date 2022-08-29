@@ -29,6 +29,7 @@
 #ifndef SSL_COMMON_H_
 #define SSL_COMMON_H_
 
+#include "dco.h"
 #include "session_id.h"
 #include "socket.h"
 #include "packet_id.h"

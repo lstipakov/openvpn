@@ -1708,7 +1708,8 @@ do_init_tun(struct context *c)
 
     init_tun_post(c->c1.tuntap,
                   &c->c2.frame,
-                  &c->options.tuntap_options);
+                  &c->options.tuntap_options,
+                  &c->c1.dco);
 
     c->c1.tuntap_owned = true;
 }
@@ -1755,7 +1756,7 @@ do_open_tun(struct context *c)
         /* inherit the dco context from the tuntap object */
         if (c->c2.tls_multi)
         {
-            c->c2.tls_multi->dco = &c->c1.tuntap->dco;
+            c->c2.tls_multi->dco = &c->c1.dco;
         }
 
 #ifdef _WIN32
@@ -1808,7 +1809,7 @@ do_open_tun(struct context *c)
 #endif
         if (dco_enabled(&c->options))
         {
-            ovpn_dco_init(c->mode, &c->c1.tuntap->dco);
+            ovpn_dco_init(c->mode, &c->c1.dco);
         }
 
         /* open the tun device */
@@ -2133,7 +2134,7 @@ do_deferred_options_part2(struct context *c)
     if (dco_enabled(&c->options)
         && (c->options.ping_send_timeout || c->c2.frame.mss_fix))
     {
-        int ret = dco_set_peer(&c->c1.tuntap->dco,
+        int ret = dco_set_peer(&c->c1.dco,
                                c->c2.tls_multi->peer_id,
                                c->options.ping_send_timeout,
                                c->options.ping_rec_timeout,
@@ -3130,11 +3131,8 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     if (flags & CF_INIT_TLS_MULTI)
     {
         c->c2.tls_multi = tls_multi_init(&to);
-        /* inherit the dco context from the tuntap object */
-        if (c->c1.tuntap)
-        {
-            c->c2.tls_multi->dco = &c->c1.tuntap->dco;
-        }
+        /* inherit the dco context from the context_1 object */
+        c->c2.tls_multi->dco = &c->c1.dco;
     }
 
     if (flags & CF_INIT_TLS_AUTH_STANDALONE)

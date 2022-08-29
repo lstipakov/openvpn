@@ -226,8 +226,6 @@ struct tuntap
 #endif
     /* used for printing status info only */
     unsigned int rwflags_debug;
-
-    dco_context_t dco;
 };
 
 static inline bool
@@ -299,7 +297,8 @@ struct tuntap *init_tun(const char *dev,        /* --dev option */
 
 void init_tun_post(struct tuntap *tt,
                    const struct frame *frame,
-                   const struct tuntap_options *options);
+                   const struct tuntap_options *options,
+                   dco_context_t *dco);
 
 void do_ifconfig_setenv(const struct tuntap *tt,
                         struct env_set *es);

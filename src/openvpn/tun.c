@@ -888,13 +888,14 @@ init_tun(const char *dev,        /* --dev option */
 void
 init_tun_post(struct tuntap *tt,
               const struct frame *frame,
-              const struct tuntap_options *options)
+              const struct tuntap_options *options,
+              dco_context_t *dco)
 {
     tt->options = *options;
 #ifdef _WIN32
     if (tt->windows_driver == WINDOWS_DRIVER_DCO)
     {
-        dco_start_tun(tt);
+        dco_start_tun(tt, dco);
         return;
     }
 

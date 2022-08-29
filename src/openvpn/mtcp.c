@@ -284,7 +284,7 @@ multi_tcp_wait(const struct context *c,
 #endif
     tun_set(c->c1.tuntap, mtcp->es, EVENT_READ, MTCP_TUN, persistent);
 #if defined(TARGET_LINUX) || defined(TARGET_FREEBSD)
-    dco_event_set(&c->c1.tuntap->dco, mtcp->es, MTCP_DCO);
+    dco_event_set(&((struct context *)c)->c1.dco, mtcp->es, MTCP_DCO);
 #endif
 
 #ifdef ENABLE_MANAGEMENT
