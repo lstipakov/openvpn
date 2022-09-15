@@ -749,6 +749,7 @@ static const char usage_message[] =
     "--show-net-up   : Show " PACKAGE_NAME "'s view of routing table and net adapter list\n"
     "                  after TAP adapter is up and routes have been added.\n"
     "--windows-driver   : Which tun driver to use?\n"
+    "                     ovpn-dco\n"
     "                     tap-windows6 (default)\n"
     "                     wintun\n"
     "--block-outside-dns   : Block DNS on other network adapters to prevent DNS leaks\n"
