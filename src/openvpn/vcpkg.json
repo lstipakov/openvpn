@@ -9,5 +9,5 @@
     "lz4",
     "pkcs11-helper"
   ],
-  "builtin-baseline": "9259a0719d94c402aae2ab7975bc096afdec15df"
+  "builtin-baseline": "cafd398be781144787573ca78390e951673c7055"
 }
