@@ -42,6 +42,7 @@
 #include "ssl.h"
 #include "common.h"
 #include "manage.h"
+#include "openvpn.h"
 
 #include "memdbg.h"
 
@@ -463,16 +464,22 @@ man_bytecount(struct management *man, const int update_seconds)
     if (update_seconds >= 0)
     {
         man->connection.bytecount_update_seconds = update_seconds;
+        event_timeout_init(&man->connection.bytecount_update_interval,
+                           man->connection.bytecount_update_seconds,
+                           now);
     }
     else
     {
         man->connection.bytecount_update_seconds = 0;
+        event_timeout_clear(&man->connection.bytecount_update_interval);
     }
     msg(M_CLIENT, "SUCCESS: bytecount interval changed");
 }
 
 static void
-man_bytecount_output_client(struct management *man)
+man_bytecount_output_client(struct management *man,
+                            counter_type dco_read_bytes,
+                            counter_type dco_write_bytes)
 {
     if (man->connection.bytecount_update_seconds > 0
         && now >= man->connection.bytecount_last_update
@@ -482,8 +489,8 @@ man_bytecount_output_client(struct management *man)
         char out[32];
 
         /* do in a roundabout way to work around possible mingw or mingw-glibc bug */
-        openvpn_snprintf(in, sizeof(in), counter_format, man->persist.bytes_in);
-        openvpn_snprintf(out, sizeof(out), counter_format, man->persist.bytes_out);
+        openvpn_snprintf(in, sizeof(in), counter_format, man->persist.bytes_in + dco_read_bytes);
+        openvpn_snprintf(out, sizeof(out), counter_format, man->persist.bytes_out + dco_write_bytes);
         msg(M_CLIENT, ">BYTECOUNT:%s,%s", in, out);
         man->connection.bytecount_last_update = now;
     }
@@ -498,14 +505,14 @@ management_bytes_client(struct management *man,
     {
         man->persist.bytes_in += size_in;
         man->persist.bytes_out += size_out;
-        man_bytecount_output_client(man);
+        man_bytecount_output_client(man, 0, 0);
     }
 }
 
 void
 management_bytes_server(struct management *man,
-                        const counter_type *bytes_in_total,
-                        const counter_type *bytes_out_total,
+                        const counter_type bytes_in_total,
+                        const counter_type bytes_out_total,
                         struct man_def_auth_context *mdac)
 {
     if (man->connection.bytecount_update_seconds > 0
@@ -515,8 +522,8 @@ management_bytes_server(struct management *man,
         char in[32];
         char out[32];
         /* do in a roundabout way to work around possible mingw or mingw-glibc bug */
-        openvpn_snprintf(in, sizeof(in), counter_format, *bytes_in_total);
-        openvpn_snprintf(out, sizeof(out), counter_format, *bytes_out_total);
+        openvpn_snprintf(in, sizeof(in), counter_format, bytes_in_total);
+        openvpn_snprintf(out, sizeof(out), counter_format, bytes_out_total);
         msg(M_CLIENT, ">BYTECOUNT_CLI:%lu,%s,%s", mdac->cid, in, out);
         mdac->bytecount_last_update = now;
     }
@@ -2566,6 +2573,8 @@ man_connection_close(struct management *man)
     command_line_free(mc->in);
     buffer_list_free(mc->out);
 
+    event_timeout_clear(&mc->bytecount_update_interval);
+
     in_extra_reset(&man->connection, IER_RESET);
     buffer_list_free(mc->ext_key_input);
     man_connection_clear(mc);
@@ -4058,6 +4067,32 @@ management_sleep(const int n)
     else if (n > 0)
     {
         sleep(n);
+    }
+}
+
+void
+management_check_bytecount(struct context *c, struct management *man, struct timeval *timeval)
+{
+    if (event_timeout_trigger(&man->connection.bytecount_update_interval,
+                              timeval, ETT_DEFAULT))
+    {
+        /* TODO: get stats from DCO */
+
+        counter_type dco_read_bytes = 0;
+        counter_type dco_write_bytes = 0;
+
+        if (!(man->persist.callback.flags & MCF_SERVER))
+        {
+            man_bytecount_output_client(man, dco_read_bytes, dco_write_bytes);
+        }
+
+        management_bytes_server(man,
+                                c->c2.link_read_bytes + dco_read_bytes,
+                                c->c2.link_write_bytes + dco_write_bytes,
+                                &c->c2.mda_context);
+
+        event_timeout_modify_wakeup(&man->connection.bytecount_update_interval,
+                                    man->connection.bytecount_update_seconds);
     }
 }
 

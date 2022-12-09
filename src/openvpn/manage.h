@@ -296,6 +296,7 @@ struct man_connection {
     bool echo_realtime;
     int bytecount_update_seconds;
     time_t bytecount_last_update;
+    struct event_timeout bytecount_update_interval;
 
     const char *up_query_type;
     int up_query_mode;
@@ -518,9 +519,14 @@ management_bytes_client(struct management *man,
 
 void
 management_bytes_server(struct management *man,
-                        const counter_type *bytes_in_total,
-                        const counter_type *bytes_out_total,
+                        const counter_type bytes_in_total,
+                        const counter_type bytes_out_total,
                         struct man_def_auth_context *mdac);
+
+void
+management_check_bytecount(struct context *c,
+                           struct management *man,
+                           struct timeval *timeval);
 
 #endif /* ifdef ENABLE_MANAGEMENT */
 
