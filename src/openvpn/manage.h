@@ -511,70 +511,16 @@ void management_auth_token(struct management *man, const char *token);
 /*
  * These functions drive the bytecount in/out counters.
  */
+void
+management_bytes_client(struct management *man,
+                        const int size_in,
+                        const int size_out);
 
-void man_bytecount_output_client(struct management *man);
-
-static inline void
-man_bytecount_possible_output_client(struct management *man)
-{
-    if (man->connection.bytecount_update_seconds > 0
-        && now >= man->connection.bytecount_last_update
-        + man->connection.bytecount_update_seconds)
-    {
-        man_bytecount_output_client(man);
-    }
-}
-
-static inline void
-management_bytes_out_client(struct management *man, const int size)
-{
-    man->persist.bytes_out += size;
-    man_bytecount_possible_output_client(man);
-}
-
-static inline void
-management_bytes_in_client(struct management *man, const int size)
-{
-    man->persist.bytes_in += size;
-    man_bytecount_possible_output_client(man);
-}
-
-static inline void
-management_bytes_out(struct management *man, const int size)
-{
-    if (!(man->persist.callback.flags & MCF_SERVER))
-    {
-        management_bytes_out_client(man, size);
-    }
-}
-
-static inline void
-management_bytes_in(struct management *man, const int size)
-{
-    if (!(man->persist.callback.flags & MCF_SERVER))
-    {
-        management_bytes_in_client(man, size);
-    }
-}
-
-void man_bytecount_output_server(struct management *man,
-                                 const counter_type *bytes_in_total,
-                                 const counter_type *bytes_out_total,
-                                 struct man_def_auth_context *mdac);
-
-static inline void
+void
 management_bytes_server(struct management *man,
                         const counter_type *bytes_in_total,
                         const counter_type *bytes_out_total,
-                        struct man_def_auth_context *mdac)
-{
-    if (man->connection.bytecount_update_seconds > 0
-        && now >= mdac->bytecount_last_update + man->connection.bytecount_update_seconds
-        && (mdac->flags & (DAF_CONNECTION_ESTABLISHED|DAF_CONNECTION_CLOSED)) == DAF_CONNECTION_ESTABLISHED)
-    {
-        man_bytecount_output_server(man, bytes_in_total, bytes_out_total, mdac);
-    }
-}
+                        struct man_def_auth_context *mdac);
 
 #endif /* ifdef ENABLE_MANAGEMENT */
 

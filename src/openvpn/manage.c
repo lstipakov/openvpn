@@ -471,31 +471,55 @@ man_bytecount(struct management *man, const int update_seconds)
     msg(M_CLIENT, "SUCCESS: bytecount interval changed");
 }
 
-void
+static void
 man_bytecount_output_client(struct management *man)
 {
-    char in[32];
-    char out[32];
-    /* do in a roundabout way to work around possible mingw or mingw-glibc bug */
-    openvpn_snprintf(in, sizeof(in), counter_format, man->persist.bytes_in);
-    openvpn_snprintf(out, sizeof(out), counter_format, man->persist.bytes_out);
-    msg(M_CLIENT, ">BYTECOUNT:%s,%s", in, out);
-    man->connection.bytecount_last_update = now;
+    if (man->connection.bytecount_update_seconds > 0
+        && now >= man->connection.bytecount_last_update
+        + man->connection.bytecount_update_seconds)
+    {
+        char in[32];
+        char out[32];
+
+        /* do in a roundabout way to work around possible mingw or mingw-glibc bug */
+        openvpn_snprintf(in, sizeof(in), counter_format, man->persist.bytes_in);
+        openvpn_snprintf(out, sizeof(out), counter_format, man->persist.bytes_out);
+        msg(M_CLIENT, ">BYTECOUNT:%s,%s", in, out);
+        man->connection.bytecount_last_update = now;
+    }
 }
 
 void
-man_bytecount_output_server(struct management *man,
-                            const counter_type *bytes_in_total,
-                            const counter_type *bytes_out_total,
-                            struct man_def_auth_context *mdac)
+management_bytes_client(struct management *man,
+                        const int size_in,
+                        const int size_out)
 {
-    char in[32];
-    char out[32];
-    /* do in a roundabout way to work around possible mingw or mingw-glibc bug */
-    openvpn_snprintf(in, sizeof(in), counter_format, *bytes_in_total);
-    openvpn_snprintf(out, sizeof(out), counter_format, *bytes_out_total);
-    msg(M_CLIENT, ">BYTECOUNT_CLI:%lu,%s,%s", mdac->cid, in, out);
-    mdac->bytecount_last_update = now;
+    if (!(man->persist.callback.flags & MCF_SERVER))
+    {
+        man->persist.bytes_in += size_in;
+        man->persist.bytes_out += size_out;
+        man_bytecount_output_client(man);
+    }
+}
+
+void
+management_bytes_server(struct management *man,
+                        const counter_type *bytes_in_total,
+                        const counter_type *bytes_out_total,
+                        struct man_def_auth_context *mdac)
+{
+    if (man->connection.bytecount_update_seconds > 0
+        && now >= mdac->bytecount_last_update + man->connection.bytecount_update_seconds
+        && (mdac->flags & (DAF_CONNECTION_ESTABLISHED | DAF_CONNECTION_CLOSED)) == DAF_CONNECTION_ESTABLISHED)
+    {
+        char in[32];
+        char out[32];
+        /* do in a roundabout way to work around possible mingw or mingw-glibc bug */
+        openvpn_snprintf(in, sizeof(in), counter_format, *bytes_in_total);
+        openvpn_snprintf(out, sizeof(out), counter_format, *bytes_out_total);
+        msg(M_CLIENT, ">BYTECOUNT_CLI:%lu,%s,%s", mdac->cid, in, out);
+        mdac->bytecount_last_update = now;
+    }
 }
 
 static void
