@@ -30,9 +30,16 @@ def get_branch_commit_id():
     if not commit_id:
         raise
     l = os.popen("git rev-parse --symbolic-full-name HEAD").read().split("/")[2:]
-    if not l:
-        l = ["none\n"]
-    branch = "/" .join(l)[:-1]
+    if l:
+        branch = "/" .join(l)[:-1]
+    else:
+        # are we on tag?
+        l = os.popen("git describe --tags").read()
+        if l:
+            branch = l[:-1]
+        else:
+            branch = "none"
+
     return branch, commit_id
 
 def main():
