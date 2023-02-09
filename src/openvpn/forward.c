@@ -724,7 +724,25 @@ process_coarse_timers(struct context *c)
     if (c->options.inactivity_timeout
         && event_timeout_trigger(&c->c2.inactivity_interval, &c->c2.timeval, ETT_DEFAULT))
     {
-        check_inactivity_timeout(c);
+        if (dco_enabled(&c->options) && dco_get_peer_stats(c) == 0)
+        {
+            int64_t tot_bytes = c->c2.tun_read_bytes + c->c2.tun_write_bytes;
+            int64_t new_bytes = tot_bytes - c->c2.inactivity_bytes;
+
+            if (new_bytes > c->options.inactivity_minimum_bytes)
+            {
+                c->c2.inactivity_bytes = tot_bytes;
+                event_timeout_reset(&c->c2.inactivity_interval);
+            }
+            else
+            {
+                check_inactivity_timeout(c);
+            }
+        }
+        else
+        {
+            check_inactivity_timeout(c);
+        }
     }
 
     if (c->sig->signal_received)
