@@ -134,27 +134,29 @@ comp_print_stats(const struct compress_context *compctx, struct status_output *s
 void
 comp_generate_peer_info_string(const struct compress_options *opt, struct buffer *out)
 {
-    if (opt)
+    if (!opt || opt->flags & COMP_F_ALLOW_NOCOMP_ONLY)
     {
-        bool lzo_avail = false;
-        if (!(opt->flags & COMP_F_ADVERTISE_STUBS_ONLY))
-        {
+        return;
+    }
+
+    bool lzo_avail = false;
+    if (!(opt->flags & COMP_F_ADVERTISE_STUBS_ONLY))
+    {
 #if defined(ENABLE_LZ4)
-            buf_printf(out, "IV_LZ4=1\n");
-            buf_printf(out, "IV_LZ4v2=1\n");
+        buf_printf(out, "IV_LZ4=1\n");
+        buf_printf(out, "IV_LZ4v2=1\n");
 #endif
 #if defined(ENABLE_LZO)
-            buf_printf(out, "IV_LZO=1\n");
-            lzo_avail = true;
+        buf_printf(out, "IV_LZO=1\n");
+        lzo_avail = true;
 #endif
-        }
-        if (!lzo_avail)
-        {
-            buf_printf(out, "IV_LZO_STUB=1\n");
-        }
-        buf_printf(out, "IV_COMP_STUB=1\n");
-        buf_printf(out, "IV_COMP_STUBv2=1\n");
     }
+    if (!lzo_avail)
+    {
+        buf_printf(out, "IV_LZO_STUB=1\n");
+    }
+    buf_printf(out, "IV_COMP_STUB=1\n");
+    buf_printf(out, "IV_COMP_STUBv2=1\n");
 }
 
 #endif /* USE_COMP */

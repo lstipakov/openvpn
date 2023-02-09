@@ -3634,10 +3634,16 @@ options_set_backwards_compatible_options(struct options *o)
      *
      * Disable compression by default starting with 2.6.0 if no other
      * compression related option has been explicitly set */
-    if (!comp_non_stub_enabled(&o->comp) && !need_compatibility_before(o, 20600)
-        && (o->comp.flags == 0))
+    if (!need_compatibility_before(o, 20600) && (o->comp.flags == 0))
     {
-        o->comp.flags = COMP_F_ALLOW_STUB_ONLY|COMP_F_ADVERTISE_STUBS_ONLY;
+        if (o->comp.alg == COMP_ALG_UNDEF)
+        {
+            o->comp.flags = COMP_F_ALLOW_NOCOMP_ONLY;
+        }
+        else if (!comp_non_stub_enabled(&o->comp))
+        {
+            o->comp.flags = COMP_F_ALLOW_STUB_ONLY | COMP_F_ADVERTISE_STUBS_ONLY;
+        }
     }
 #endif
 }
@@ -8335,8 +8341,16 @@ add_option(struct options *options,
 
         if (streq(p[1], "no"))
         {
-            options->comp.flags =
-                COMP_F_ALLOW_STUB_ONLY|COMP_F_ADVERTISE_STUBS_ONLY;
+            options->comp.flags = COMP_F_ALLOW_NOCOMP_ONLY;
+            if (comp_non_stub_enabled(&options->comp))
+            {
+                msg(msglevel, "'--allow-compression no' conflicts with "
+                    " enabling compression");
+            }
+        }
+        else if (streq(p[1], "stub-only"))
+        {
+            options->comp.flags = COMP_F_ADVERTISE_STUBS_ONLY|COMP_F_ALLOW_STUB_ONLY;
             if (comp_non_stub_enabled(&options->comp))
             {
                 msg(msglevel, "'--allow-compression no' conflicts with "
@@ -8347,7 +8361,7 @@ add_option(struct options *options,
         {
             /* Also printed on a push to hint at configuration problems */
             msg(msglevel, "Cannot set allow-compression to '%s' "
-                "after set to 'no'", p[1]);
+                "after set to 'stub-only'", p[1]);
             goto err;
         }
         else if (streq(p[1], "asym"))
@@ -8378,8 +8392,16 @@ add_option(struct options *options,
 
         /* All lzo variants do not use swap */
         options->comp.flags &= ~COMP_F_SWAP;
+
+        if (options->comp.flags & COMP_F_ALLOW_NOCOMP_ONLY)
+        {
+            /* Also printed on a push to hint at configuration problems */
+            msg(msglevel, "Cannot set comp-lzo to '%s', "
+                "allow-compression is set to 'no'", p[1]);
+            goto err;
+        }
 #if defined(ENABLE_LZO)
-        if (p[1] && streq(p[1], "no"))
+        else if (p[1] && streq(p[1], "no"))
 #endif
         {
             options->comp.alg = COMP_ALG_STUB;
@@ -8390,7 +8412,7 @@ add_option(struct options *options,
         {
             /* Also printed on a push to hint at configuration problems */
             msg(msglevel, "Cannot set comp-lzo to '%s', "
-                "allow-compression is set to 'no'", p[1]);
+                "allow-compression is set to 'stub-only'", p[1]);
             goto err;
         }
         else if (p[1])
@@ -8433,7 +8455,14 @@ add_option(struct options *options,
         VERIFY_PERMISSION(OPT_P_COMP);
         if (p[1])
         {
-            if (streq(p[1], "stub"))
+            if (options->comp.flags & COMP_F_ALLOW_NOCOMP_ONLY)
+            {
+                /* Also printed on a push to hint at configuration problems */
+                msg(msglevel, "Cannot set compress to '%s', "
+                    "allow-compression is set to 'no'", p[1]);
+                goto err;
+            }
+            else if (streq(p[1], "stub"))
             {
                 options->comp.alg = COMP_ALG_STUB;
                 options->comp.flags |= (COMP_F_SWAP|COMP_F_ADVERTISE_STUBS_ONLY);
@@ -8447,13 +8476,12 @@ add_option(struct options *options,
             {
                 options->comp.alg = COMP_ALG_UNDEF;
                 options->comp.flags = COMP_F_MIGRATE;
-
             }
             else if (options->comp.flags & COMP_F_ALLOW_STUB_ONLY)
             {
                 /* Also printed on a push to hint at configuration problems */
                 msg(msglevel, "Cannot set compress to '%s', "
-                    "allow-compression is set to 'no'", p[1]);
+                    "allow-compression is set to 'stub-only'", p[1]);
                 goto err;
             }
 #if defined(ENABLE_LZO)

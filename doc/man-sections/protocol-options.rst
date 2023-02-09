@@ -25,6 +25,9 @@ configured in a compatible way between both the local and remote side.
       compression at the same time is not a feasible option.
 
   :code:`no`  (default)
+      OpenVPN will refuse any compression or compression framing (stub).
+
+  :code:`stub-only`
       OpenVPN will refuse any non-stub compression.
 
   :code:`yes`
