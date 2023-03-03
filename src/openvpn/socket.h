@@ -206,6 +206,7 @@ struct link_socket
 #define SF_PORT_SHARE (1<<2)
 #define SF_HOST_RANDOMIZE (1<<3)
 #define SF_GETADDRINFO_DGRAM (1<<4)
+#define SF_DCO_WIN (1<<5)
     unsigned int sockflags;
     int mark;
     const char *bind_dev;
@@ -1020,6 +1021,12 @@ stream_buf_read_setup(struct link_socket *sock)
     }
 }
 
+static inline bool
+socket_is_dco_win(const struct link_socket *s)
+{
+    return s->sockflags & SF_DCO_WIN;
+}
+
 /*
  * Socket Read Routines
  */
@@ -1035,8 +1042,7 @@ link_socket_read_udp_win32(struct link_socket *sock,
                            struct link_socket_actual *from)
 {
     sockethandle_t sh = { .s = sock->sd };
-    //if (sock->dco_installed)
-    if (true)
+    if (socket_is_dco_win(sock))
     {
         *from = sock->info.lsa->actual;
         sh.is_handle = true;
@@ -1058,7 +1064,7 @@ link_socket_read(struct link_socket *sock,
                  struct buffer *buf,
                  struct link_socket_actual *from)
 {
-    if (proto_is_udp(sock->info.proto))
+    if (proto_is_udp(sock->info.proto) || socket_is_dco_win(sock))
     /* unified UDPv4 and UDPv6, for DCO the kernel
      * will strip the length header */
     {
@@ -1101,7 +1107,7 @@ link_socket_write_win32(struct link_socket *sock,
 {
     int err = 0;
     int status = 0;
-    sockethandle_t sh = { .s = sock->sd, .is_handle = true };
+    sockethandle_t sh = { .s = sock->sd, .is_handle = socket_is_dco_win(sock) };
     if (overlapped_io_active(&sock->writes))
     {
         status = sockethandle_finalize(sh, &sock->writes, NULL, NULL);
@@ -1175,7 +1181,7 @@ link_socket_write(struct link_socket *sock,
                   struct buffer *buf,
                   struct link_socket_actual *to)
 {
-    if (proto_is_udp(sock->info.proto))
+    if (proto_is_udp(sock->info.proto) || socket_is_dco_win(sock))
     {
         /* unified UDPv4 and UDPv6 */
         return link_socket_write_udp(sock, buf, to);
