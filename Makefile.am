@@ -63,12 +63,7 @@ dist_noinst_DATA = \
 	.gitignore \
 	.gitattributes \
 	PORTS \
-	README.mbedtls \
-	openvpn.sln
-
-dist_noinst_HEADERS = \
-	config-msvc.h \
-	config-msvc-version.h.in
+	README.mbedtls
 
 config-version.h:
 	@CONFIGURE_GIT_CHFILES="`GIT_DIR=\"$(top_srcdir)/.git\" $(GIT) diff-files --name-status -r --ignore-submodules --quiet -- || echo \"+\"`"; \
