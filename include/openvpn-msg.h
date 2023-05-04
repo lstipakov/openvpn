@@ -40,7 +40,9 @@ typedef enum {
     msg_register_dns,
     msg_enable_dhcp,
     msg_register_ring_buffers,
-    msg_set_mtu
+    msg_set_mtu,
+    msg_add_dns_domain_search,
+    msg_del_dns_domain_search
 } message_type_t;
 
 typedef struct {
@@ -85,6 +87,11 @@ typedef struct {
     int addr_len;
     inet_address_t addr[4]; /* support up to 4 dns addresses */
 } dns_cfg_message_t;
+
+typedef struct {
+    message_header_t header;
+    char domains[512];
+} dns_domain_search_message_t;
 
 typedef struct {
     message_header_t header;

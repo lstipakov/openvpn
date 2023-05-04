@@ -205,6 +205,70 @@ out:
 }
 
 static bool
+do_dns_domain_search_service(bool add, const struct tuntap *tt)
+{
+    bool ret = false;
+    ack_message_t ack;
+    struct gc_arena gc = gc_new();
+    HANDLE pipe = tt->options.msg_channel;
+
+    if (tt->options.domain_search_list_len <= 0) /* no domain search list to add or delete */
+    {
+        return true;
+    }
+
+    dns_domain_search_message_t dns = {
+        .header = {
+            (add ? msg_add_dns_domain_search : msg_del_dns_domain_search),
+            sizeof(dns_domain_search_message_t),
+            0
+        },
+        .domains = "",      /* set below */
+    };
+
+    for (int i = 0; i < tt->options.domain_search_list_len; ++i)
+    {
+        int input_len = strlen(tt->options.domain_search_list[i]);
+
+        /* check for overflow */
+        if (strlen(dns.domains) + input_len + (i > 0 ? 1 : 0) >= sizeof(dns.domains))
+        {
+            msg(M_WARN, "DNS domain search list will be truncated");
+            break;
+        }
+
+        /* add comma separator for all domains except first one */
+        if (i > 0)
+        {
+            strcat(dns.domains, ",");
+        }
+
+        strcat(dns.domains, tt->options.domain_search_list[i]);
+    }
+
+    msg(D_LOW, "%s dns domain search list on using service", (add ? "Setting" : "Deleting"));
+    if (!send_msg_iservice(pipe, &dns, sizeof(dns), &ack, "TUN"))
+    {
+        goto out;
+    }
+
+    if (ack.error_number != NO_ERROR)
+    {
+        msg(M_WARN, "TUN: %s dns domain search list failed using service: %s [status=%u]",
+            (add ? "adding" : "deleting"), strerror_win32(ack.error_number, &gc),
+            ack.error_number);
+        goto out;
+    }
+
+    msg(M_INFO, "DNS domain search list %s using service", (add ? "set" : "deleted"));
+    ret = true;
+
+out:
+    gc_free(&gc);
+    return ret;
+}
+
+static bool
 do_dns_service(bool add, const short family, const struct tuntap *tt)
 {
     bool ret = false;
@@ -1183,6 +1247,7 @@ do_ifconfig_ipv6(struct tuntap *tt, const char *ifname, int tun_mtu,
         if (!tt->did_ifconfig_setup)
         {
             do_dns_domain_service(true, tt);
+            do_dns_domain_search_service(true, tt);
         }
     }
     else
@@ -1557,6 +1622,7 @@ do_ifconfig_ipv4(struct tuntap *tt, const char *ifname, int tun_mtu,
         do_address_service(true, AF_INET, tt);
         do_dns_service(true, AF_INET, tt);
         do_dns_domain_service(true, tt);
+        do_dns_domain_search_service(true, tt);
     }
     else
     {
@@ -6948,6 +7014,7 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
             /* If IPv4 is not enabled, delete DNS domain here */
             if (!tt->did_ifconfig_setup)
             {
+                do_dns_domain_search_service(false, tt);
                 do_dns_domain_service(false, tt);
             }
             if (tt->options.dns6_len > 0)
@@ -6981,6 +7048,7 @@ close_tun(struct tuntap *tt, openvpn_net_ctx_t *ctx)
         else if (tt->options.msg_channel)
         {
             do_dns_domain_service(false, tt);
+            do_dns_domain_search_service(false, tt);
             do_dns_service(false, AF_INET, tt);
             do_address_service(false, AF_INET, tt);
         }

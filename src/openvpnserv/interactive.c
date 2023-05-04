@@ -92,6 +92,7 @@ typedef enum {
     undo_dns4,
     undo_dns6,
     undo_domain,
+    undo_domain_search_list,
     undo_ring_buffer,
     _undo_type_max
 } undo_type_t;
@@ -1085,46 +1086,64 @@ out:
 
 /**
  * Run command: wmic nicconfig (InterfaceIndex=$if_index) call $action ($data)
- * @param  if_index    "index of interface"
+ * @param  if_index    pointer to index of interface, or NULL if interface index is not needed
  * @param  action      e.g., "SetDNSDomain"
  * @param  data        data if required for action
  *                     - a single word for SetDNSDomain, empty or NULL to delete
  *                     - comma separated values for a list
  */
 static DWORD
-wmic_nicconfig_cmd(const wchar_t *action, const NET_IFINDEX if_index,
+wmic_nicconfig_cmd(const wchar_t *action, const NET_IFINDEX *if_index,
                    const wchar_t *data)
 {
     DWORD err = 0;
     wchar_t argv0[MAX_PATH];
     wchar_t *cmdline = NULL;
+    wchar_t *cmdline_if = L"";
     int timeout = 10000; /* in msec */
 
     openvpn_swprintf(argv0, _countof(argv0), L"%ls\\%ls", get_win_sys_path(), L"wbem\\wmic.exe");
+
+    if (if_index)
+    {
+        const wchar_t *fmt_if = L"where(InterfaceIndex=%ld)";
+        size_t ncmdline = wcslen(fmt_if) + 20; /* 20 for interface index */
+        cmdline_if = malloc(ncmdline * sizeof(wchar_t));
+        if (!cmdline_if)
+        {
+            err = ERROR_OUTOFMEMORY;
+            goto out;
+        }
+        openvpn_swprintf(cmdline_if, ncmdline, fmt_if, *if_index);
+    }
 
     const wchar_t *fmt;
     /* comma separated list must be enclosed in parenthesis */
     if (data && wcschr(data, L','))
     {
-        fmt = L"wmic nicconfig where (InterfaceIndex=%ld) call %ls (%ls)";
+        fmt = L"wmic nicconfig %ls call %ls (%ls)";
     }
     else
     {
-        fmt = L"wmic nicconfig where (InterfaceIndex=%ld) call %ls \"%ls\"";
+        fmt = L"wmic nicconfig %ls call %ls \"%ls\"";
     }
 
-    size_t ncmdline = wcslen(fmt) + 20 + wcslen(action) /* max 20 for ifindex */
-                      + (data ? wcslen(data) + 1 : 1);
+    size_t ncmdline = wcslen(fmt) + wcslen(cmdline_if) + wcslen(action) + (data ? wcslen(data) + 1 : 1);
     cmdline = malloc(ncmdline*sizeof(wchar_t));
     if (!cmdline)
     {
-        return ERROR_OUTOFMEMORY;
+        err = ERROR_OUTOFMEMORY;
+        goto out;
     }
 
-    openvpn_swprintf(cmdline, ncmdline, fmt, if_index, action,
-                     data ? data : L"");
+    openvpn_swprintf(cmdline, ncmdline, fmt, cmdline_if, action, data ? data : L"");
     err = ExecCommand(argv0, cmdline, timeout);
 
+out:
+    if (cmdline_if && wcslen(cmdline_if))
+    {
+        free(cmdline_if);
+    }
     free(cmdline);
     return err;
 }
@@ -1182,7 +1201,7 @@ SetDNSDomain(const wchar_t *if_name, const char *domain, undo_lists_t *lists)
         free(RemoveListItem(&(*lists)[undo_domain], CmpWString, (void *)if_name));
     }
 
-    err = wmic_nicconfig_cmd(L"SetDNSDomain", if_index, wdomain);
+    err = wmic_nicconfig_cmd(L"SetDNSDomain", &if_index, wdomain);
 
     /* Add to undo list if domain is non-empty */
     if (err == 0 && wdomain[0] && lists)
@@ -1196,6 +1215,43 @@ SetDNSDomain(const wchar_t *if_name, const char *domain, undo_lists_t *lists)
     }
 
     free(wdomain);
+    return err;
+}
+
+/**
+ * Set global DNS Domain Search List
+ * @param  domain     comma-separated list of domain search name
+ * @param  lists      pointer to the undo lists. If NULL
+ *                    undo lists are not altered.
+ * Will delete the currently set value if domain search list is empty.
+ */
+static DWORD
+SetDNSDomainSearchList(const char *domains, undo_lists_t *lists)
+{
+    wchar_t *wdomains = utf8to16(domains); /* utf8 to wide-char */
+    if (!wdomains)
+    {
+        return ERROR_OUTOFMEMORY;
+    }
+
+    /* free undo list if previously set */
+    if (lists)
+    {
+        free(RemoveListItem(&(*lists)[undo_domain_search_list], CmpAny, NULL));
+    }
+
+    DWORD err = wmic_nicconfig_cmd(L"SetDNSSuffixSearchOrder", NULL, wdomains);
+
+    /* Add to undo list if domain is non-empty */
+    if (err == 0 && wdomains[0] && lists)
+    {
+        if (AddListItem(&(*lists)[undo_domain_search_list], NULL))
+        {
+            err = ERROR_OUTOFMEMORY;
+        }
+    }
+
+    free(wdomains);
     return err;
 }
 
@@ -1295,6 +1351,38 @@ HandleDNSConfigMessage(const dns_cfg_message_t *msg, undo_lists_t *lists)
 
 out:
     free(wide_name);
+    return err;
+}
+
+static DWORD
+HandleDNSDomainSearchMessage(const dns_domain_search_message_t *msg, undo_lists_t *lists)
+{
+    DWORD err = 0;
+
+    /* use a non-const reference with limited scope to enforce null-termination of strings from client */
+    {
+        dns_cfg_message_t *msgptr = (dns_cfg_message_t *)msg;
+        msgptr->domains[_countof(msg->domains) - 1] = '\0';
+    }
+
+    if (msg->header.type == msg_del_dns_domain_search)
+    {
+        if (msg->domains[0])
+        {
+            /* setting an empty domain search list removes any previous value */
+            err = SetDNSDomainSearchList("", lists);
+        }
+        goto out;  /* job done */
+    }
+
+    err = 0;
+
+    if (msg->domains[0])
+    {
+        err = SetDNSDomainSearchList(msg->domains, lists);
+    }
+
+out:
     return err;
 }
 
@@ -1487,6 +1575,7 @@ HandleMessage(HANDLE pipe, HANDLE ovpn_proc,
         enable_dhcp_message_t dhcp;
         register_ring_buffers_message_t rrb;
         set_mtu_message_t mtu;
+        dns_domain_search_message_t domain_search;
     } msg;
     ack_message_t ack = {
         .header = {
@@ -1545,6 +1634,11 @@ HandleMessage(HANDLE pipe, HANDLE ovpn_proc,
         case msg_add_dns_cfg:
         case msg_del_dns_cfg:
             ack.error_number = HandleDNSConfigMessage(&msg.dns, lists);
+            break;
+
+        case msg_add_dns_domain_search:
+        case msg_del_dns_domain_search:
+            ack.error_number = HandleDNSDomainSearchMessage(&msg.domain_search, lists);
             break;
 
         case msg_enable_dhcp:
@@ -1629,6 +1723,10 @@ Undo(undo_lists_t *lists)
 
                 case undo_ring_buffer:
                     UnmapRingBuffer(item->data);
+                    break;
+
+                case undo_domain_search_list:
+                    SetDNSDomainSearchList("", NULL);
                     break;
 
                 case _undo_type_max:
