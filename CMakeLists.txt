@@ -206,6 +206,14 @@ if (${ENABLE_PKCS11})
     pkg_search_module(pkcs11-helper libpkcs11-helper-1 REQUIRED IMPORTED_TARGET)
 endif ()
 
+function(add_pdb_generation target)
+    target_compile_options(${target} PRIVATE "$<$<CONFIG:Release>:/Zi>")
+    target_link_options(${target} PRIVATE
+        "$<$<CONFIG:Release>:/DEBUG:FULL>"
+        "$<$<CONFIG:Release>:/OPT:REF>"
+        "$<$<CONFIG:Release>:/OPT:ICF>")
+endfunction()
+
 function(add_library_deps target)
     if (${MBED})
         target_link_libraries(${target} -lmbedtls -lmbedx509 -lmbedcrypto)
@@ -494,6 +502,8 @@ endif()
 if (MSVC)
     # we have our own manifest
     target_link_options(openvpn PRIVATE /MANIFEST:NO)
+
+    add_pdb_generation(openvpn openvpnserv openvpn openvpnmsicia tapctl)
 endif()
 
 if (${CMAKE_SYSTEM_NAME} STREQUAL "Linux")
