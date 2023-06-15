@@ -23,11 +23,6 @@ option(WOLFSSL "BUILD with wolfSSL" OFF)
 option(ENABLE_LZ4 "BUILD with lz4" ON)
 option(ENABLE_LZO "BUILD with lzo" ON)
 option(ENABLE_PKCS11 "BUILD with pkcs11-helper" ON)
-if (MSVC)
-    option(USE_WERROR "Treat compiler warnings as errors (-Werror)" OFF)
-else ()
-    option(USE_WERROR "Treat compiler warnings as errors (-Werror)" ON)
-endif ()
 
 set(PLUGIN_DIR /usr/local/lib/openvpn/plugins CACHE FILEPATH "Location of the plugin directory")
 
@@ -42,23 +37,32 @@ set(CMAKE_CXX_FLAGS_ASAN
     FORCE)
 
 if (MSVC)
-    add_compile_options(/W2 /Qspectre /GL)
     add_definitions(-D_CRT_SECURE_NO_WARNINGS -D_CRT_NONSTDC_NO_DEPRECATE -D_WINSOCK_DEPRECATED_NO_WARNINGS)
-    add_link_options(/Brepro /LTCG)
-    if (USE_WERROR)
-        add_compile_options(/WX)
-    endif ()
+    add_compile_options(
+        /MP
+        /W2
+        /WX
+        /sdl
+        /Qspectre
+        /guard:cf
+        /FC
+        /ZH:SHA_256
+        "$<$<CONFIG:Release>:/GL>"
+        "$<$<CONFIG:Release>:/Oi>"
+        "$<$<CONFIG:Release>:/Gy>"
+    )
+    add_link_options("$<$<CONFIG:Release>:/LTCG:incremental>")
+    if (${CMAKE_GENERATOR_PLATFORM} STREQUAL "x64" OR ${CMAKE_GENERATOR_PLATFORM} STREQUAL "x86")
+        add_link_options("$<$<CONFIG:Release>:/CETCOMPAT>")
+    endif()
 else ()
     set(CMAKE_C_FLAGS_RELEASE "-O2")
     set(CMAKE_CXX_FLAGS_RELEASE "-O2")
     set(CMAKE_C_FLAGS_DEBUG "-g -O1")
     set(CMAKE_CXX_FLAGS_DEBUG "-g -O1")
-    add_compile_options(-Wall -Wuninitialized -Wno-stringop-truncation)
+    add_compile_options(-Wall -Wuninitialized -Wno-stringop-truncation -Werror)
     # We are not ready for this
     #add_compile_options(-Wconversion -Wno-sign-conversion -Wsign-compare)
-    if (USE_WERROR)
-        add_compile_options(-Werror)
-    endif ()
 endif ()
 
 find_package(PkgConfig REQUIRED)
