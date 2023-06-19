@@ -53,8 +53,11 @@ if (MSVC)
         "$<$<CONFIG:Release>:/GL>"
         "$<$<CONFIG:Release>:/Oi>"
         "$<$<CONFIG:Release>:/Gy>"
-    )
-    add_link_options("$<$<CONFIG:Release>:/LTCG:incremental>")
+        )
+    add_link_options(
+        /Brepro
+        "$<$<CONFIG:Release>:/LTCG:incremental>"
+        )
     if (${CMAKE_GENERATOR_PLATFORM} STREQUAL "x64" OR ${CMAKE_GENERATOR_PLATFORM} STREQUAL "x86")
         add_link_options("$<$<CONFIG:Release>:/CETCOMPAT>")
     endif()
