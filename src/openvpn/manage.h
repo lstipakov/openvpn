@@ -197,6 +197,8 @@ struct management_callback
                                  const unsigned int kid,
                                  const char *extra,
                                  unsigned int timeout);
+    bool (*cc_send) (void *arg,
+                     const char *msg);
     char *(*get_peer_info) (void *arg, const unsigned long cid);
     bool (*proxy_cmd)(void *arg, const char **p);
     bool (*remote_cmd) (void *arg, const char **p);

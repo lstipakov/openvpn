@@ -39,7 +39,7 @@
 
 static bool
 process_signal_p2p(struct context *c)
-{
+{    
     remap_signal(c);
     return process_signal(c);
 }

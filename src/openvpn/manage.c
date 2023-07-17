@@ -1089,6 +1089,29 @@ man_client_pending_auth(struct management *man, const char *cid_str,
 }
 
 static void
+man_cc_send(struct management *man, const char *msg)
+{
+    if (man->persist.callback.client_pending_auth)
+    {
+        bool ret = (*man->persist.callback.cc_send)
+                        (man->persist.callback.arg, msg);
+
+        if (ret)
+        {
+            msg(M_CLIENT, "SUCCESS: cc-send command succeeded");
+        }
+        else
+        {
+            msg(M_CLIENT, "ERROR: cc-send command failed.");
+        }
+    }
+    else
+    {
+        man_command_unsupported("cc-send");
+    }
+}
+
+static void
 man_client_auth(struct management *man, const char *cid_str, const char *kid_str, const bool extra)
 {
     struct man_connection *mc = &man->connection;
@@ -1596,6 +1619,13 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
         {
             man_client_pending_auth(man, p[1], p[2], p[3], p[4]);
         }
+    }
+    else if (streq(p[0], "cc-send"))
+    {
+        if (man_need(man, p, 1, 0))
+        {
+            man_cc_send(man, p[1]);
+        }        
     }
     else if (streq(p[0], "rsa-sig"))
     {

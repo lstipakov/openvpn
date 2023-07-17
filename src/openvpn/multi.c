@@ -4019,6 +4019,24 @@ management_kill_by_cid(void *arg, const unsigned long cid, const char *kill_msg)
 }
 
 static bool
+management_cc_send(void *arg,
+                   const char *msg)
+{
+    bool ret = false;
+    struct multi_context *m = (struct multi_context *) arg;
+    struct multi_instance *mi = m->instances[0];
+    if (mi)
+    {
+        struct tls_multi *multi = mi->context.c2.tls_multi;
+        struct tls_session *session = &multi->session[TM_ACTIVE];
+        ret = send_control_channel_string_dowork(session, msg, D_PUSH);
+        reschedule_multi_process(&mi->context);
+        multi_schedule_context_wakeup(m, mi);
+    }
+    return ret;
+}
+
+static bool
 management_client_pending_auth(void *arg,
                                const unsigned long cid,
                                const unsigned int mda_key_id,
@@ -4029,9 +4047,14 @@ management_client_pending_auth(void *arg,
     struct multi_instance *mi = lookup_by_cid(m, cid);
 
     if (mi)
-    {
+    {        
         struct tls_multi *multi = mi->context.c2.tls_multi;
         struct tls_session *session;
+
+        int tm_ini = multi->session[TM_INITIAL].key[KS_PRIMARY].mda_key_id;
+        int tm_act = multi->session[TM_ACTIVE].key[KS_PRIMARY].mda_key_id;
+        
+        msg(D_MULTI_LOW, "MULTI: mi found, ini %d, act %d", tm_ini, tm_act);
 
         if (multi->session[TM_INITIAL].key[KS_PRIMARY].mda_key_id == mda_key_id)
         {
@@ -4046,9 +4069,13 @@ management_client_pending_auth(void *arg,
             return false;
         }
 
+        bool ret = send_control_channel_string_dowork(session, "Hello, World!", D_PUSH);
+
         /* sends INFO_PRE and AUTH_PENDING messages to client */
+        /*
         bool ret = send_auth_pending_messages(multi, session, extra,
                                               timeout);
+        */
         reschedule_multi_process(&mi->context);
         multi_schedule_context_wakeup(m, mi);
         return ret;
@@ -4134,6 +4161,7 @@ init_management_callback_multi(struct multi_context *m)
         cb.kill_by_cid = management_kill_by_cid;
         cb.client_auth = management_client_auth;
         cb.client_pending_auth = management_client_pending_auth;
+        cb.cc_send = management_cc_send;
         cb.get_peer_info = management_get_peer_info;
         management_set_callback(management, &cb);
     }

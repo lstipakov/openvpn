@@ -28,7 +28,13 @@
                 "VCPKG_MANIFEST_DIR": "${sourceDir}/contrib/vcpkg-manifests/windows",
                 "VCPKG_HOST_TRIPLET": "x64-windows"
             },
-            "vendor": { "microsoft.com/VisualStudioSettings/CMake/1.0": { "hostOS": [ "Windows" ] } }
+            "vendor": {
+                "microsoft.com/VisualStudioSettings/CMake/1.0": {
+                    "hostOS": [
+                        "Windows"
+                    ]
+                }
+            }
         },
         {
             "name": "base-mingw",
@@ -123,40 +129,82 @@
         },
         {
             "name": "mingw-x64",
-            "inherits": [ "base", "base-mingw", "x64-mingw" ]
+            "inherits": [
+                "base",
+                "base-mingw",
+                "x64-mingw"
+            ]
         },
         {
             "name": "mingw-x86",
-            "inherits": [ "base", "base-mingw", "i686-mingw" ]
+            "inherits": [
+                "base",
+                "base-mingw",
+                "i686-mingw"
+            ]
         },
         {
             "name": "win-amd64-release",
-            "inherits": [ "base", "base-windows", "x64", "release" ]
+            "inherits": [
+                "base",
+                "base-windows",
+                "x64",
+                "release"
+            ]
         },
         {
             "name": "win-arm64-release",
-            "inherits": [ "base", "base-windows", "arm64", "release" ]
+            "inherits": [
+                "base",
+                "base-windows",
+                "arm64",
+                "release"
+            ]
         },
         {
             "name": "win-x86-release",
-            "inherits": [ "base", "base-windows", "x86", "release" ]
+            "inherits": [
+                "base",
+                "base-windows",
+                "x86",
+                "release"
+            ]
         },
         {
             "name": "win-amd64-debug",
-            "inherits": [ "base", "base-windows", "x64", "debug" ]
+            "inherits": [
+                "base",
+                "base-windows",
+                "x64",
+                "debug"
+            ]
         },
         {
             "name": "win-arm64-debug",
-            "inherits": [ "base", "base-windows", "arm64", "debug" ]
+            "inherits": [
+                "base",
+                "base-windows",
+                "arm64",
+                "debug"
+            ]
         },
         {
             "name": "win-x86-debug",
-            "inherits": [ "base", "base-windows", "x86", "debug" ]
+            "inherits": [
+                "base",
+                "base-windows",
+                "x86",
+                "debug"
+            ]
         },
         {
             "name": "unix-native",
             "generator": "Ninja Multi-Config",
-            "binaryDir": "out/build/unix"
+            "binaryDir": "out/build/unix",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "UNSUPPORTED_BUILDS": "ON"
+            }
         }
     ],
     "buildPresets": [
@@ -201,6 +249,13 @@
         {
             "name": "unix-native",
             "configurePreset": "unix-native"
+        },
+        {
+            "name": "Linux",
+            "description": "",
+            "displayName": "",
+            "configuration": "Debug",
+            "configurePreset": "unix-native"
         }
     ],
     "testPresets": [
@@ -224,5 +279,5 @@
             "name": "unix-native",
             "configurePreset": "unix-native"
         }
-     ]
+    ]
 }
