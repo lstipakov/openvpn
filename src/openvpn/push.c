@@ -42,6 +42,8 @@
 
 static char push_reply_cmd[] = "PUSH_REPLY";
 
+#define INFOMSG_MAN ">INFOMSG:"
+
 /*
  * Auth username/password
  *
@@ -243,8 +245,8 @@ server_pushed_info(struct context *c, const struct buffer *buffer,
          * We use >INFOMSG here instead of plain >INFO since INFO is used to
          * for management greeting and we don't want to confuse the client
          */
-        struct buffer out = alloc_buf_gc(256, &gc);
-        buf_printf(&out, ">%s:%s", "INFOMSG", m);
+        struct buffer out = alloc_buf_gc(strlen(INFOMSG_MAN) + BLEN(&buf), &gc);
+        buf_printf(&out, "%s%s", INFOMSG_MAN, m);
         management_notify_generic(management, BSTR(&out));
 
         gc_free(&gc);
