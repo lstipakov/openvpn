@@ -3189,6 +3189,10 @@ check_session_buf_not_used(struct buffer *to_link, struct tls_session *session)
     for (int i = 0; i < KS_SIZE; i++)
     {
         struct key_state *ks = &session->key[i];
+        if (ks->state == S_UNDEF)
+        {
+            continue;
+        }
         for (int j = 0; j < ks->send_reliable->size; j++)
         {
             if (ks->send_reliable->array[i].buf.data == dataptr)
