@@ -45,7 +45,7 @@ set(PLUGIN_DIR /usr/local/lib/openvpn/plugins CACHE FILEPATH "Location of the pl
 # Create machine readable compile commands
 set(CMAKE_EXPORT_COMPILE_COMMANDS 1)
 file(CREATE_LINK ${CMAKE_CURRENT_BINARY_DIR}/compile_commands.json
-                 ${CMAKE_CURRENT_SOURCE_DIR}/compile_commands.json SYMBOLIC)
+                 ${CMAKE_CURRENT_SOURCE_DIR}/compile_commands.json RESULT COMPILE_COMMANDS_CREATED SYMBOLIC)
 
 # AddressSanitize - use CXX=clang++ CC=clang cmake -DCMAKE_BUILD_TYPE=asan to build with ASAN
 set(CMAKE_C_FLAGS_ASAN
