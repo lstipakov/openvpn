@@ -557,10 +557,10 @@ dco_new_key(dco_context_t *dco, unsigned int peerid, int keyid,
             dco_key_slot_t slot,
             const uint8_t *encrypt_key, const uint8_t *encrypt_iv,
             const uint8_t *decrypt_key, const uint8_t *decrypt_iv,
-            const char *ciphername)
+            const char *ciphername, unsigned int co_flags)
 {
-    msg(D_DCO_DEBUG, "%s: slot %d, key-id %d, peer-id %d, cipher %s",
-        __func__, slot, keyid, peerid, ciphername);
+    msg(D_DCO_DEBUG, "%s: slot %d, key-id %d, peer-id %d, cipher %s, co_flags %d",
+        __func__, slot, keyid, peerid, ciphername, co_flags);
 
     const size_t key_len = cipher_kt_key_size(ciphername);
     const int nonce_tail_len = 8;
@@ -1056,6 +1056,13 @@ const char *
 dco_get_supported_ciphers(void)
 {
     return "AES-128-GCM:AES-256-GCM:AES-192-GCM:CHACHA20-POLY1305";
+}
+
+bool
+dco_supports_data_v3(struct context *c)
+{
+    /* not implemented */
+    return false;
 }
 
 #endif /* defined(ENABLE_DCO) && defined(TARGET_LINUX) */

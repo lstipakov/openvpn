@@ -253,11 +253,7 @@ const char *dco_get_supported_ciphers(void);
  * Return whether the dco implementation supports the new protocol features of
  * a 64 bit packet counter and AEAD tag at the end.
  */
-static inline bool
-dco_supports_data_v3(struct context *c)
-{
-    return false;
-}
+bool dco_supports_data_v3(struct context *c);
 
 #else /* if defined(ENABLE_DCO) */
 

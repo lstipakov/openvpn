@@ -70,7 +70,7 @@ int dco_new_key(dco_context_t *dco, unsigned int peerid, int keyid,
                 dco_key_slot_t slot,
                 const uint8_t *encrypt_key, const uint8_t *encrypt_iv,
                 const uint8_t *decrypt_key, const uint8_t *decrypt_iv,
-                const char *ciphername);
+                const char *ciphername, unsigned int co_flags);
 
 int dco_del_key(dco_context_t *dco, unsigned int peerid, dco_key_slot_t slot);
 
