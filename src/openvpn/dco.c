@@ -70,7 +70,7 @@ dco_install_key(struct tls_multi *multi, struct key_state *ks,
     int ret = dco_new_key(multi->dco, multi->dco_peer_id, ks->key_id, slot,
                           encrypt_key, encrypt_iv,
                           decrypt_key, decrypt_iv,
-                          ciphername);
+                          ciphername, ks->crypto_options.flags);
     if ((ret == 0) && (multi->dco_keys_installed < 2))
     {
         multi->dco_keys_installed++;

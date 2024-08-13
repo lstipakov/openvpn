@@ -55,6 +55,9 @@ create_dco_handle(const char *devname, struct gc_arena *gc)
 bool
 ovpn_dco_init(int mode, dco_context_t *dco)
 {
+    dco->supports_data_v3 = dco_supports_data_v3(NULL);
+    msg(D_DCO_DEBUG, "dco supports data_v3: %d", dco->supports_data_v3);
+
     return true;
 }
 
@@ -291,47 +294,85 @@ dco_set_peer(dco_context_t *dco, unsigned int peerid,
     return 0;
 }
 
-int
-dco_new_key(dco_context_t *dco, unsigned int peerid, int keyid,
-            dco_key_slot_t slot,
-            const uint8_t *encrypt_key, const uint8_t *encrypt_iv,
-            const uint8_t *decrypt_key, const uint8_t *decrypt_iv,
-            const char *ciphername)
+static int
+dco_new_key_v1(HANDLE handle, OVPN_CRYPTO_DATA *crypto_data)
 {
-    msg(D_DCO_DEBUG, "%s: slot %d, key-id %d, peer-id %d, cipher %s",
-        __func__, slot, keyid, peerid, ciphername);
-
-    const int nonce_len = 8;
-    size_t key_len = cipher_kt_key_size(ciphername);
-
-    OVPN_CRYPTO_DATA crypto_data;
-    ZeroMemory(&crypto_data, sizeof(crypto_data));
-
-    crypto_data.CipherAlg = dco_get_cipher(ciphername);
-    crypto_data.KeyId = keyid;
-    crypto_data.PeerId = peerid;
-    crypto_data.KeySlot = slot;
-
-    CopyMemory(crypto_data.Encrypt.Key, encrypt_key, key_len);
-    crypto_data.Encrypt.KeyLen = (char)key_len;
-    CopyMemory(crypto_data.Encrypt.NonceTail, encrypt_iv, nonce_len);
-
-    CopyMemory(crypto_data.Decrypt.Key, decrypt_key, key_len);
-    crypto_data.Decrypt.KeyLen = (char)key_len;
-    CopyMemory(crypto_data.Decrypt.NonceTail, decrypt_iv, nonce_len);
-
-    ASSERT(crypto_data.CipherAlg > 0);
-
     DWORD bytes_returned = 0;
 
-    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_NEW_KEY, &crypto_data,
-                         sizeof(crypto_data), NULL, 0, &bytes_returned, NULL))
+    if (!DeviceIoControl(handle, OVPN_IOCTL_NEW_KEY, crypto_data, sizeof(*crypto_data), NULL, 0, &bytes_returned, NULL))
     {
         msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_NEW_KEY) failed");
         return -1;
     }
     return 0;
 }
+
+static int
+dco_new_key_v2(HANDLE handle, OVPN_CRYPTO_DATA_V2 *crypto_data, unsigned int co_flags)
+{
+    if (co_flags & CO_AEAD_TAG_AT_THE_END)
+    {
+        crypto_data->CryptoOptions |= CRYPTO_OPTIONS_AEAD_TAG_END;
+    }
+
+    if (co_flags & CO_64_BIT_PKT_ID)
+    {
+        crypto_data->CryptoOptions |= CRYPTO_OPTIONS_64BIT_PKTID;
+    }
+
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(handle, OVPN_IOCTL_NEW_KEY_V2, crypto_data, sizeof(*crypto_data), NULL, 0, &bytes_returned, NULL))
+    {
+        msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_NEW_KEY_V2) failed");
+        return -1;
+    }
+
+    return 0;
+}
+
+int
+dco_new_key(dco_context_t *dco, unsigned int peerid, int keyid,
+            dco_key_slot_t slot,
+            const uint8_t *encrypt_key, const uint8_t *encrypt_iv,
+            const uint8_t *decrypt_key, const uint8_t *decrypt_iv,
+            const char *ciphername, unsigned int co_flags)
+{
+    msg(D_DCO_DEBUG, "%s: slot %d, key-id %d, peer-id %d, cipher %s, co_flags %u",
+        __func__, slot, keyid, peerid, ciphername, co_flags);
+
+    const int nonce_len = 8;
+    size_t key_len = cipher_kt_key_size(ciphername);
+
+    OVPN_CRYPTO_DATA_V2 crypto_data_v2;
+    ZeroMemory(&crypto_data_v2, sizeof(crypto_data_v2));
+
+    OVPN_CRYPTO_DATA *crypto_data = &crypto_data_v2.V1;
+
+    crypto_data->CipherAlg = dco_get_cipher(ciphername);
+    crypto_data->KeyId = keyid;
+    crypto_data->PeerId = peerid;
+    crypto_data->KeySlot = slot;
+
+    CopyMemory(crypto_data->Encrypt.Key, encrypt_key, key_len);
+    crypto_data->Encrypt.KeyLen = (char)key_len;
+    CopyMemory(crypto_data->Encrypt.NonceTail, encrypt_iv, nonce_len);
+
+    CopyMemory(crypto_data->Decrypt.Key, decrypt_key, key_len);
+    crypto_data->Decrypt.KeyLen = (char)key_len;
+    CopyMemory(crypto_data->Decrypt.NonceTail, decrypt_iv, nonce_len);
+
+    ASSERT(crypto_data->CipherAlg > 0);
+
+    if (dco->supports_data_v3)
+    {
+        return dco_new_key_v2(dco->tt->hand, &crypto_data_v2, co_flags);
+    }
+    else
+    {
+        return dco_new_key_v1(dco->tt->hand, crypto_data);
+    }
+}
+
 int
 dco_del_key(dco_context_t *dco, unsigned int peerid, dco_key_slot_t slot)
 {
@@ -492,6 +533,41 @@ dco_get_supported_ciphers()
     {
         return "AES-128-GCM:AES-256-GCM:AES-192-GCM";
     }
+}
+
+bool
+dco_supports_data_v3(struct context *c)
+{
+    bool res = false;
+
+    HANDLE h = CreateFile("\\\\.\\ovpn-dco-ver", GENERIC_READ,
+                          0, NULL, OPEN_EXISTING, 0, NULL);
+
+    if (h == INVALID_HANDLE_VALUE)
+    {
+        goto done;
+    }
+
+    OVPN_VERSION version;
+    ZeroMemory(&version, sizeof(OVPN_VERSION));
+
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(h, OVPN_IOCTL_GET_VERSION, NULL, 0,
+                         &version, sizeof(version), &bytes_returned, NULL))
+    {
+        goto done;
+    }
+
+    /* data_v3 is supported starting from 1.4 */
+    res = (version.Major > 1) || (version.Minor >= 4);
+
+done:
+    if (h != INVALID_HANDLE_VALUE)
+    {
+        CloseHandle(h);
+    }
+
+    return res;
 }
 
 #endif /* defined(_WIN32) */
