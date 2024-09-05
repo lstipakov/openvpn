@@ -34,6 +34,7 @@ typedef OVPN_CIPHER_ALG dco_cipher_t;
 struct dco_context {
     struct tuntap *tt;
     bool supports_data_v3;
+    OVPN_VERSION version;
 };
 
 typedef struct dco_context dco_context_t;
