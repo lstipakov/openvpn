@@ -110,15 +110,60 @@ dco_version_supports_data_v3(OVPN_VERSION *version)
     return (version->Major > 1) || (version->Minor >= 4);
 }
 
+static inline
+bool
+dco_version_supports_mp(OVPN_VERSION *version)
+{
+    return version->Major >= 2;
+}
+
+bool
+dco_set_mode(dco_context_t *dco, int mode)
+{
+    msg(D_DCO_DEBUG, "%s: mode %d", __func__, mode);
+
+    OVPN_MODE ovpn_mode;
+    switch (mode)
+    {
+        case CM_TOP:
+            ovpn_mode = OVPN_MODE_MP;
+            break;
+
+        case CM_P2P:
+            ovpn_mode = OVPN_MODE_P2P;
+            break;
+
+        default:
+            ASSERT(false);
+    }
+
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_SET_MODE, &ovpn_mode,
+                         sizeof(ovpn_mode), NULL, 0, &bytes_returned, NULL))
+    {
+        msg(M_WARN | M_ERRNO, "DeviceIoControl(OVPN_IOCTL_SET_MODE) failed");
+        return -1;
+    }
+    return 0;
+}
+
 bool
 ovpn_dco_init(int mode, dco_context_t *dco)
 {
+    int res = true;
+
     (void)dco_get_version(&dco->version);
+
     dco->supports_data_v3 = dco_version_supports_data_v3(&dco->version);
+    bool mp = dco_version_supports_mp(&dco->version);
+    if (mp)
+    {
+        res = dco_set_mode(dco, mode);
+    }
 
-    msg(D_DCO_DEBUG, "dco supports data_v3: %d", dco->supports_data_v3);
+    msg(D_DCO_DEBUG, "dco supports multipeer: %d, data_v3: %d", mp, dco->supports_data_v3);
 
-    return true;
+    return res;
 }
 
 int
