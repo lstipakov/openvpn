@@ -1323,7 +1323,8 @@ read_incoming_tun(struct context *c)
     }
     else
     {
-        sockethandle_t sh = { .is_handle = true, .h = c->c1.tuntap->hand };
+        bool prepend_sa = c->options.mode == MODE_SERVER && dco_enabled(&c->options);
+        sockethandle_t sh = { .is_handle = true, .h = c->c1.tuntap->hand, .prepend_sa = prepend_sa };
         sockethandle_finalize(sh, &c->c1.tuntap->reads, &c->c2.buf, NULL);
     }
 #else  /* ifdef _WIN32 */

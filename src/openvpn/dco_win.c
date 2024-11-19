@@ -28,6 +28,7 @@
 #include "syshead.h"
 
 #include "dco.h"
+#include "forward.h"
 #include "tun.h"
 #include "crypto.h"
 #include "ssl_common.h"
@@ -42,14 +43,35 @@ const IN_ADDR in4addr_any = { 0 };
 #endif
 
 struct tuntap
-create_dco_handle(const char *devname, struct gc_arena *gc)
+create_dco_handle(const char *devname, struct gc_arena *gc, int mode)
 {
     struct tuntap tt = { .backend_driver = DRIVER_DCO };
     const char *device_guid;
 
     tun_open_device(&tt, devname, &device_guid, gc);
 
+    /* for mp we set mode in ovpn_dco_init(), however for p2p it is too late */
+    tt.dco.mode = (mode == MODE_SERVER) ? dco_mode_mp : dco_mode_p2p;
+
     return tt;
+}
+
+/* Sometimes IP Helper API, which we use for setting IP address etc,
+ * complains that interface is not found. Give it some time to settle
+ */
+static void
+dco_wait_ready(DWORD idx)
+{
+    for (int i = 0; i < 20; ++i)
+    {
+        MIB_IPINTERFACE_ROW row = { .InterfaceIndex = idx, .Family = AF_INET };
+        if (GetIpInterfaceEntry(&row) != ERROR_NOT_FOUND)
+        {
+            break;
+        }
+        msg(D_DCO_DEBUG, "interface %ld not yet ready, retrying", idx);
+        Sleep(50);
+    }
 }
 
 /**
@@ -104,8 +126,32 @@ done:
 }
 
 bool
-ovpn_dco_init(int mode, dco_context_t *dco)
+ovpn_dco_init(int mode, dco_context_t *dco, const char *dev_node)
 {
+    /* for p2p dco->mode is already set */
+    dco->mode = (mode == MODE_POINT_TO_POINT) ? dco_mode_p2p : dco_mode_mp;
+
+    if (dco->mode == dco_mode_p2p)
+    {
+        return true;
+    }
+
+    /* open DCO device */
+    struct gc_arena gc = gc_new();
+    const char *device_guid;
+    tun_open_device(dco->tt, dev_node, &device_guid, &gc);
+    gc_free(&gc);
+
+    /* set mp mode */
+    OVPN_MODE m = OVPN_MODE_MP;
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_SET_MODE, &m, sizeof(m), NULL, 0, &bytes_returned, NULL))
+    {
+        msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_SET_MODE) failed");
+    }
+
+    dco_wait_ready(dco->tt->adapter_index);
+
     return true;
 }
 
@@ -116,19 +162,19 @@ open_tun_dco(struct tuntap *tt, openvpn_net_ctx_t *ctx, const char *dev)
     return 0;
 }
 
-static void
-dco_wait_ready(DWORD idx)
+void
+dco_p2p_start_vpn(struct tuntap *tt)
 {
-    for (int i = 0; i < 20; ++i)
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(tt->hand, OVPN_IOCTL_START_VPN, NULL, 0, NULL, 0, &bytes_returned, NULL))
     {
-        MIB_IPINTERFACE_ROW row = {.InterfaceIndex = idx, .Family = AF_INET};
-        if (GetIpInterfaceEntry(&row) != ERROR_NOT_FOUND)
-        {
-            break;
-        }
-        msg(D_DCO_DEBUG, "interface %ld not yet ready, retrying", idx);
-        Sleep(50);
+        msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_START_VPN) failed");
     }
+
+    /* Sometimes IP Helper API, which we use for setting IP address etc,
+     * complains that interface is not found. Give it some time to settle
+     */
+    dco_wait_ready(tt->adapter_index);
 }
 
 void
@@ -141,17 +187,10 @@ dco_start_tun(struct tuntap *tt)
      */
     tt->dco.tt = tt;
 
-    DWORD bytes_returned = 0;
-    if (!DeviceIoControl(tt->hand, OVPN_IOCTL_START_VPN, NULL, 0, NULL, 0,
-                         &bytes_returned, NULL))
+    if (tt->dco.mode == dco_mode_p2p)
     {
-        msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_START_VPN) failed");
+        dco_p2p_start_vpn(tt);
     }
-
-    /* Sometimes IP Helper API, which we use for setting IP address etc,
-     * complains that interface is not found. Give it some time to settle
-     */
-    dco_wait_ready(tt->adapter_index);
 }
 
 static void
@@ -207,13 +246,66 @@ dco_connect_wait(HANDLE handle, OVERLAPPED *ov, int timeout, struct signal_info 
 }
 
 void
-dco_create_socket(HANDLE handle, struct addrinfo *remoteaddr, bool bind_local,
-                  struct addrinfo *bind, int timeout,
-                  struct signal_info *sig_info)
+dco_mp_start_vpn(HANDLE handle, struct link_socket *sock)
+{
+    msg(D_DCO_DEBUG, "%s", __func__);
+
+    int ai_family = sock->info.lsa->bind_local->ai_family;
+    struct addrinfo *local = sock->info.lsa->bind_local;
+    struct addrinfo *cur = NULL;
+
+    for (cur = local; cur; cur = cur->ai_next)
+    {
+        if (cur->ai_family == ai_family)
+        {
+            break;
+        }
+    }
+    if (!cur)
+    {
+        msg(M_FATAL, "%s: Socket bind failed: Addr to bind has no %s record",
+            __func__, addr_family_name(ai_family));
+    }
+
+    OVPN_MP_START_VPN in, out;
+    in.IPv6Only = sock->info.bind_ipv6_only ? 1 : 0;
+    if (ai_family == AF_INET)
+    {
+        memcpy(&in.ListenAddress.Addr4, cur->ai_addr, sizeof(struct sockaddr_in));
+    }
+    else
+    {
+        memcpy(&in.ListenAddress.Addr6, cur->ai_addr, sizeof(struct sockaddr_in6));
+    }
+
+    /* in multipeer mode control channel packets are prepended with remote peer's sockaddr */
+    sock->sockflags |= SF_PREPEND_SA;
+
+    DWORD bytes_returned = 0;
+    if (!DeviceIoControl(handle, OVPN_IOCTL_MP_START_VPN, &in, sizeof(in), &out, sizeof(out),
+                         &bytes_returned, NULL))
+    {
+        msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_MP_START_VPN) failed");
+    }
+
+    if (out.ListenAddress.Addr4.sin_family == AF_INET)
+    {
+        memcpy(&sock->info.lsa->actual.dest.addr.in4, &out.ListenAddress.Addr4, sizeof(struct sockaddr_in));
+    }
+    else
+    {
+        memcpy(&sock->info.lsa->actual.dest.addr.in6, &out.ListenAddress.Addr6, sizeof(struct sockaddr_in6));
+    }
+}
+
+void
+dco_p2p_new_peer(HANDLE handle, struct link_socket *sock, struct signal_info *sig_info)
 {
     msg(D_DCO_DEBUG, "%s", __func__);
 
     OVPN_NEW_PEER peer = { 0 };
+
+    struct addrinfo *remoteaddr = sock->info.lsa->current_remote;
 
     struct sockaddr *local = NULL;
     struct sockaddr *remote = remoteaddr->ai_addr;
@@ -228,9 +320,10 @@ dco_create_socket(HANDLE handle, struct addrinfo *remoteaddr, bool bind_local,
         peer.Proto = OVPN_PROTO_UDP;
     }
 
-    if (bind_local)
+    if (sock->bind_local)
     {
         /* Use first local address with correct address family */
+        struct addrinfo *bind = sock->info.lsa->bind_local;
         while (bind && !local)
         {
             if (bind->ai_family == remote->sa_family)
@@ -241,7 +334,7 @@ dco_create_socket(HANDLE handle, struct addrinfo *remoteaddr, bool bind_local,
         }
     }
 
-    if (bind_local && !local)
+    if (sock->bind_local && !local)
     {
         msg(M_FATAL, "DCO: Socket bind failed: Address to bind lacks %s record",
             addr_family_name(remote->sa_family));
@@ -290,9 +383,70 @@ dco_create_socket(HANDLE handle, struct addrinfo *remoteaddr, bool bind_local,
         }
         else
         {
-            dco_connect_wait(handle, &ov, timeout, sig_info);
+            dco_connect_wait(handle, &ov, get_server_poll_remaining_time(sock->server_poll_timeout), sig_info);
         }
     }
+}
+
+static struct sockaddr *
+dco_get_source_ip_for_dst(const struct sockaddr *dst)
+{
+    SOCKADDR_INET dst_in = { 0 };
+
+    /* Cast the destination address to SOCKADDR_INET */
+    if (dst->sa_family == AF_INET)
+    {
+        dst_in.Ipv4 = *((struct sockaddr_in *)dst);
+        dst_in.si_family = AF_INET;
+    }
+    else if (dst->sa_family == AF_INET6)
+    {
+        dst_in.Ipv6 = *((struct sockaddr_in6 *)dst);
+        dst_in.si_family = AF_INET6;
+    }
+    else
+    {
+        msg(M_FATAL, "%s: unknown dst address family %d", __func__, dst->sa_family);
+    }
+
+    /* Get the best source address */
+    MIB_IPFORWARD_ROW2 row;
+    SOCKADDR_INET best_src = { 0 };
+    DWORD ret = GetBestRoute2(NULL, 0, NULL, &dst_in, 0, &row, &best_src);
+    if (ret != NO_ERROR)
+    {
+        msg(M_WARN, "%s: GetBestRoute2() failed with error: %ld\n", __func__, ret);
+        return NULL;
+    }
+
+    /* Allocate and copy the best source address to return as sockaddr */
+    struct sockaddr *src = NULL;
+    if (best_src.si_family == AF_INET6)
+    {
+        struct sockaddr_in6 *src_in6 = (struct sockaddr_in6 *)malloc(sizeof(struct sockaddr_in6));
+        if (src_in6 == NULL)
+        {
+            msg(M_FATAL, "%s: malloc failed", __func__);
+        }
+        *src_in6 = best_src.Ipv6;
+        src = (struct sockaddr *)src_in6;
+    }
+    else if (best_src.si_family == AF_INET)
+    {
+        struct sockaddr_in *src_in = (struct sockaddr_in *)malloc(sizeof(struct sockaddr_in));
+        if (src_in == NULL)
+        {
+            msg(M_FATAL, "%s: malloc failed", __func__);
+        }
+        *src_in = best_src.Ipv4;
+        src = (struct sockaddr *)src_in;
+    }
+    else
+    {
+        msg(M_FATAL, "%s: unknown src family %d", __func__, best_src.si_family);
+    }
+
+    return src;
 }
 
 int
@@ -301,6 +455,59 @@ dco_new_peer(dco_context_t *dco, unsigned int peerid, int sd,
              struct in_addr *vpn_ipv4, struct in6_addr *vpn_ipv6)
 {
     msg(D_DCO_DEBUG, "%s: peer-id %d, fd %d", __func__, peerid, sd);
+
+    if (dco->mode == dco_mode_p2p)
+    {
+        /* no-op for p2p */
+        return 0;
+    }
+
+    OVPN_MP_NEW_PEER newPeer = {0};
+
+    if (remoteaddr)
+    {
+        struct sockaddr *local = dco_get_source_ip_for_dst(remoteaddr);
+        if (local)
+        {
+            if (local->sa_family == AF_INET)
+            {
+                memcpy(&newPeer.Local.Addr4, local, sizeof(struct sockaddr_in));
+            }
+            else
+            {
+                memcpy(&newPeer.Local.Addr6, local, sizeof(struct sockaddr_in6));
+            }
+            free(local);
+        }
+
+        if (remoteaddr->sa_family == AF_INET)
+        {
+            memcpy(&newPeer.Remote.Addr4, remoteaddr, sizeof(struct sockaddr_in));
+        }
+        else
+        {
+            memcpy(&newPeer.Remote.Addr6, remoteaddr, sizeof(struct sockaddr_in6));
+        }
+    }
+
+    if (vpn_ipv4)
+    {
+        newPeer.VpnAddr4 = *vpn_ipv4;
+    }
+
+    if (vpn_ipv6)
+    {
+        newPeer.VpnAddr6 = *vpn_ipv6;
+    }
+
+    newPeer.PeerId = peerid;
+
+    DWORD bytesReturned;
+    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_MP_NEW_PEER, &newPeer, sizeof(newPeer), NULL, 0, &bytesReturned, NULL))
+    {
+        msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_MP_NEW_PEER) failed");
+    }
+
     return 0;
 }
 
@@ -309,9 +516,20 @@ dco_del_peer(dco_context_t *dco, unsigned int peerid)
 {
     msg(D_DCO_DEBUG, "%s: peer-id %d", __func__, peerid);
 
+    OVPN_MP_DEL_PEER del_peer = { peerid };
+    VOID *buf = NULL;
+    DWORD len = 0;
+    DWORD ioctl = OVPN_IOCTL_DEL_PEER;
+
+    if (dco->mode == dco_mode_mp)
+    {
+        ioctl = OVPN_IOCTL_MP_DEL_PEER;
+        buf = &del_peer;
+        len = sizeof(del_peer);
+    }
+
     DWORD bytes_returned = 0;
-    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_DEL_PEER, NULL,
-                         0, NULL, 0, &bytes_returned, NULL))
+    if (!DeviceIoControl(dco->tt->hand, ioctl, buf, len, NULL, 0, &bytes_returned, NULL))
     {
         msg(M_WARN | M_ERRNO, "DeviceIoControl(OVPN_IOCTL_DEL_PEER) failed");
         return -1;
@@ -326,19 +544,30 @@ dco_set_peer(dco_context_t *dco, unsigned int peerid,
     msg(D_DCO_DEBUG, "%s: peer-id %d, keepalive %d/%d, mss %d", __func__,
         peerid, keepalive_interval, keepalive_timeout, mss);
 
-    OVPN_SET_PEER peer;
+    OVPN_MP_SET_PEER mp_peer = { peerid, keepalive_interval, keepalive_timeout, mss };
+    OVPN_SET_PEER peer = { keepalive_interval, keepalive_timeout, mss };
+    VOID *buf = NULL;
+    DWORD len = 0;
+    DWORD ioctl = (dco->mode == dco_mode_mp) ? OVPN_IOCTL_MP_SET_PEER : OVPN_IOCTL_SET_PEER;
 
-    peer.KeepaliveInterval =  keepalive_interval;
-    peer.KeepaliveTimeout = keepalive_timeout;
-    peer.MSS = mss;
+    if (dco->mode == dco_mode_mp)
+    {
+        buf = &mp_peer;
+        len = sizeof(OVPN_MP_SET_PEER);
+    }
+    else
+    {
+        buf = &peer;
+        len = sizeof(OVPN_SET_PEER);
+    }
 
     DWORD bytes_returned = 0;
-    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_SET_PEER, &peer,
-                         sizeof(peer), NULL, 0, &bytes_returned, NULL))
+    if (!DeviceIoControl(dco->tt->hand, ioctl, buf, len, NULL, 0, &bytes_returned, NULL))
     {
-        msg(M_WARN | M_ERRNO, "DeviceIoControl(OVPN_IOCTL_SET_PEER) failed");
+        msg(M_WARN | M_ERRNO, "DeviceIoControl(OVPN_IOCTL_MP_SET_PEER) failed");
         return -1;
     }
+
     return 0;
 }
 
@@ -397,9 +626,20 @@ dco_swap_keys(dco_context_t *dco, unsigned int peer_id)
 {
     msg(D_DCO_DEBUG, "%s: peer-id %d", __func__, peer_id);
 
+    OVPN_MP_SWAP_KEYS swap = {peer_id};
+    DWORD ioctl = OVPN_IOCTL_SWAP_KEYS;
+    VOID *buf = NULL;
+    DWORD len = 0;
+
+    if (dco->mode == dco_mode_mp)
+    {
+        ioctl = OVPN_IOCTL_MP_SWAP_KEYS;
+        buf = &swap;
+        len = sizeof(swap);
+    }
+
     DWORD bytes_returned = 0;
-    if (!DeviceIoControl(dco->tt->hand, OVPN_IOCTL_SWAP_KEYS, NULL, 0, NULL, 0,
-                         &bytes_returned, NULL))
+    if (!DeviceIoControl(dco->tt->hand, ioctl, buf, len, NULL, 0, &bytes_returned, NULL))
     {
         msg(M_ERR, "DeviceIoControl(OVPN_IOCTL_SWAP_KEYS) failed");
         return -1;
