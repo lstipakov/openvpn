@@ -30,6 +30,8 @@
 
 #include "options_util.h"
 
+#include "push.h"
+
 const char *
 parse_auth_failed_temp(struct options *o, const char *reason)
 {
@@ -144,4 +146,175 @@ atoi_warn(const char *str, int msglevel)
     }
 
     return (int) i;
+}
+
+static const char *updatable_options[] = {
+    "block-ipv6",
+    "block-outside-dns",
+    "dhcp-option",
+    "dns",
+    "ifconfig",
+    "ifconfig-ipv6",
+    "push-continuation",
+    "redirect-gateway",
+    "redirect-private",
+    "route",
+    "route-gateway",
+    "route-ipv6",
+    "route-metric",
+    "topology",
+    "tun-mtu",
+    "keepalive"
+};
+
+/**
+ * @brief Checks the formatting and validity of options inside push-update messages.
+ *
+ * This function is used in `apply_pull_filter()` to validate and process options
+ * in push-update messages. It performs the following checks:
+ * - Determines if the options are updatable.
+ * - Checks for the presence of the `-` flag, which indicates that the option
+ *   should be removed.
+ * - Checks for the `?` flag, which marks the option as optional and suppresses
+ *   errors if the client cannot update it.
+ * - Modifies the original string (`*line`) by removing the `'-'` and `'?'` flags
+ *   after validating them and updating the appropriate flags in the `flags` variable.
+ * - `-?option`, `-option`, `?option` are valid formats, `?-option` is not a valid format.
+ *
+ * @param line A pointer to an option string. This string is the option being validated.
+ * @param flags A pointer where flags will be stored:
+ *              - `PUSH_OPT_TO_REMOVE`: Set if the `-` flag is present.
+ *              - `PUSH_OPT_OPTIONAL`: Set if the `?` flag is present.
+ *
+ * @return true if the flags and option combination are valid.
+ * @return false if:
+ *         - The `-` and `?` flags are not formatted correctly.
+ *         - The `line` parameter is empty or `NULL`.
+ *         - The `?` flag is absent and the option is not updatable.
+ */
+static bool
+check_push_update_option_flags(char **line, unsigned int *flags)
+{
+    if (!line || !*line || !**line)
+    {
+        return false;
+    }
+    *flags = 0;
+    bool opt_is_updatable = false;
+    char *str = *line;
+    char c = **line;
+
+    if (c == '-')
+    {
+        if (!(str)[1])
+        {
+            return false;
+        }
+        *flags |= PUSH_OPT_TO_REMOVE;
+        c = *(++(str));
+    }
+    if (c == '?')
+    {
+        if (!(str)[1] || (str)[1] == '-')
+        {
+            return false;
+        }
+        *flags |= PUSH_OPT_OPTIONAL;
+        c = *(++(str));
+    }
+
+    /* Skip '?' and '-' if they are present */
+    size_t len = strlen(str);
+    memmove(*line, str, len);
+    (*line)[len] = '\0';
+    str = *line;
+
+    int count = sizeof(updatable_options)/sizeof(char *);
+    for (int i = 0; i < count; ++i)
+    {
+        size_t opt_len = strlen(updatable_options[i]);
+        if (len < opt_len)
+        {
+            continue;
+        }
+        if (!strncmp(str, updatable_options[i], opt_len)
+            && (!str[opt_len] || str[opt_len] == ' '))
+        {
+            opt_is_updatable = true;
+            break;
+        }
+    }
+
+    if (!opt_is_updatable)
+    {
+        if (*flags & PUSH_OPT_OPTIONAL)
+        {
+            msg(D_PUSH, "Pushed option is not updatable: '%s'", *line);
+            return true;
+        }
+        else
+        {
+            msg(M_WARN, "Pushed option is not updatable: '%s'. Restarting.", *line);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool
+apply_pull_filter(const struct options *o, char *line, bool is_update, unsigned int *push_update_option_flags)
+{
+    struct pull_filter *f;
+
+    if (!o->pull_filter_list && !(is_update))
+    {
+        return true;
+    }
+
+    /* skip leading spaces matching the behaviour of parse_line */
+    while (isspace(*line))
+    {
+        line++;
+    }
+
+    if (is_update)
+    {
+        if (!check_push_update_option_flags(&line, push_update_option_flags))
+        {
+            return false;
+        }
+        if (!o->pull_filter_list)
+        {
+            return true;
+        }
+    }
+
+    for (f = o->pull_filter_list->head; f; f = f->next)
+    {
+        if (f->type == PUF_TYPE_ACCEPT && strncmp(line, f->pattern, f->size) == 0)
+        {
+            msg(D_LOW, "Pushed option accepted by filter: '%s'", line);
+            return true;
+        }
+        else if (f->type == PUF_TYPE_IGNORE && strncmp(line, f->pattern, f->size) == 0)
+        {
+            msg(D_PUSH, "Pushed option removed by filter: '%s'", line);
+            return true;
+        }
+        else if (f->type == PUF_TYPE_REJECT && strncmp(line, f->pattern, f->size) == 0)
+        {
+            if (is_update && (*push_update_option_flags & PUSH_OPT_OPTIONAL))
+            {
+                msg(D_PUSH, "Pushed option removed by filter: '%s'", line);
+                return true;
+            }
+            else
+            {
+                msg(M_WARN, "Pushed option rejected by filter: '%s'. Restarting.", line);
+                return false;
+            }
+        }
+    }
+    return true;
 }

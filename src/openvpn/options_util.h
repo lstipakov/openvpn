@@ -50,4 +50,18 @@ positive_atoi(const char *str, int msglevel);
 int
 atoi_warn(const char *str, int msglevel);
 
+/**
+ * Filter an option line by all pull filters.
+ *
+ * If a match is found, the line is modified depending on
+ * the filter type, and returns true. If the filter type is
+ * reject, SIGUSR1 is triggered and the return value is false.
+ * In that case the caller must end the push processing.
+ */
+bool
+apply_pull_filter(const struct options *o,
+                  char *line,
+                  bool is_update,
+                  unsigned int *push_update_option_flags);
+
 #endif /* ifndef OPTIONS_UTIL_H_ */

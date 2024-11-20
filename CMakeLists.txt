@@ -533,6 +533,7 @@ set(SOURCE_FILES
     src/openvpn/ps.c
     src/openvpn/ps.h
     src/openvpn/push.c
+    src/openvpn/push_util.c
     src/openvpn/push.h
     src/openvpn/pushlist.h
     src/openvpn/reflect_filter.c
@@ -651,6 +652,7 @@ if (BUILD_TESTING)
         "test_provider"
         "test_ssl"
         "test_user_pass"
+        "test_push_update_msg"
         )
 
     if (WIN32)
@@ -851,6 +853,14 @@ if (BUILD_TESTING)
         src/openvpn/console.c
         src/openvpn/env_set.c
         src/openvpn/run_command.c
+        )
+
+    target_sources(test_push_update_msg PRIVATE
+        tests/unit_tests/openvpn/mock_msg.c
+        tests/unit_tests/openvpn/mock_get_random.c
+	    src/openvpn/push_util.c
+	    src/openvpn/options_util.c
+	    src/openvpn/otime.c
         )
 
     if (TARGET test_argv)
