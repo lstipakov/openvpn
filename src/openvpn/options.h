@@ -98,7 +98,6 @@ struct local_entry
 {
     const char *local;
     const char *port;
-    int proto;
 };
 
 struct connection_entry
@@ -917,10 +916,6 @@ void options_string_import(struct options *options,
                            struct env_set *es);
 
 bool key_is_external(const struct options *options);
-
-bool has_udp_in_local_list(const struct options *options);
-
-bool has_tcp_in_local_list(const struct options *options);
 
 /**
  * Returns whether the current configuration has dco enabled.
