@@ -125,6 +125,7 @@ typedef union {
     register_ring_buffers_message_t rrb;
     set_mtu_message_t mtu;
     wins_cfg_message_t wins;
+    create_adapter_message_t create_adapter;
 } pipe_message_t;
 
 typedef struct {
@@ -3107,6 +3108,45 @@ HandleMTUMessage(const set_mtu_message_t *mtu)
     return err;
 }
 
+static DWORD
+HandleCreateAdapterMessage(const create_adapter_message_t *msg)
+{
+    const WCHAR *hwid;
+
+    switch (msg->adapter_type)
+    {
+        case ADAPTER_TYPE_DCO:
+            hwid = L"ovpn-dco";
+            break;
+
+        case ADAPTER_TYPE_TAP:
+            hwid = L"root\\tap0901";
+            break;
+
+        case ADAPTER_TYPE_WINTUN:
+            hwid = L"wintun";
+            break;
+
+        default:
+            return ERROR_INVALID_PARAMETER;
+    }
+
+    WCHAR cmd[MAX_PATH];
+    WCHAR args[MAX_PATH];
+
+    if (swprintf_s(cmd, _countof(cmd), L"%s\\tapctl.exe", settings.bin_dir) < 0)
+    {
+        return ERROR_BUFFER_OVERFLOW;
+    }
+
+    if (swprintf_s(args, _countof(args), L"tapctl create --hwid %s", hwid) < 0)
+    {
+        return ERROR_BUFFER_OVERFLOW;
+    }
+
+    return ExecCommand(cmd, args, 10000);
+}
+
 static VOID
 HandleMessage(HANDLE pipe, PPROCESS_INFORMATION proc_info,
               DWORD bytes, DWORD count, LPHANDLE events, undo_lists_t *lists)
@@ -3205,6 +3245,14 @@ HandleMessage(HANDLE pipe, PPROCESS_INFORMATION proc_info,
                 ack.error_number = HandleMTUMessage(&msg.mtu);
             }
             break;
+
+        case msg_create_adapter:
+            if (msg.header.size == sizeof(msg.create_adapter))
+            {
+                ack.error_number = HandleCreateAdapterMessage(&msg.create_adapter);
+            }
+            break;
+
 
         default:
             ack.error_number = ERROR_MESSAGE_TYPE;
