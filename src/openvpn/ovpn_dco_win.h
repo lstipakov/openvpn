@@ -1,7 +1,7 @@
 /*
  *  ovpn-dco-win OpenVPN protocol accelerator for Windows
  *
- *  Copyright (C) 2020-2025 OpenVPN Inc <sales@openvpn.net>
+ *  Copyright (C) 2020-2021 OpenVPN Inc <sales@openvpn.net>
  *
  *  Author:	Lev Stipakov <lev@openvpn.net>
  *
@@ -15,7 +15,8 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License along
- *  with this program; if not, see <https://www.gnu.org/licenses/>.
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
  *
  *  This particular file (uapi.h) is also licensed using the MIT license (see COPYRIGHT.MIT).
  */
@@ -83,6 +84,14 @@ typedef struct _OVPN_STATS {
 	LONG64 TunBytesReceived;
 } OVPN_STATS, * POVPN_STATS;
 
+typedef struct _OVPN_PEER_STATS {
+    int PeerId;
+    LONG64 LinkRxBytes;
+    LONG64 LinkTxBytes;
+    LONG64 VpnRxBytes;
+    LONG64 VpnTxBytes;
+} OVPN_PEER_STATS, * POVPN_PEER_STATS;
+
 typedef enum _OVPN_KEY_SLOT {
 	OVPN_KEY_SLOT_PRIMARY,
 	OVPN_KEY_SLOT_SECONDARY
@@ -109,6 +118,14 @@ typedef struct _OVPN_CRYPTO_DATA {
 	unsigned char KeyId;
 	int PeerId;
 } OVPN_CRYPTO_DATA, * POVPN_CRYPTO_DATA;
+
+#define CRYPTO_OPTIONS_AEAD_TAG_END (1<<1)
+#define CRYPTO_OPTIONS_64BIT_PKTID  (1<<2)
+
+typedef struct _OVPN_CRYPTO_DATA_V2 {
+    OVPN_CRYPTO_DATA V1;
+    UINT32 CryptoOptions;
+} OVPN_CRYPTO_DATA_V2, * POVPN_CRYPTO_DATA_V2;
 
 typedef struct _OVPN_MP_SET_PEER {
     int PeerId;
@@ -185,6 +202,10 @@ typedef struct _OVPN_MP_IROUTE {
     int IPv6;
 } OVPN_MP_IROUTE, * POVPN_MP_IROUTE;
 
+typedef struct _OVPN_GET_PEER_STATS {
+    int PeerId; // -1 for all peers stats
+} OVPN_GET_PEER_STATS, * POVPN_GET_PEER_STATS;
+
 #define OVPN_IOCTL_NEW_PEER     CTL_CODE(FILE_DEVICE_UNKNOWN, 1, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define OVPN_IOCTL_GET_STATS    CTL_CODE(FILE_DEVICE_UNKNOWN, 2, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define OVPN_IOCTL_NEW_KEY      CTL_CODE(FILE_DEVICE_UNKNOWN, 3, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -207,3 +228,5 @@ typedef struct _OVPN_MP_IROUTE {
 
 #define OVPN_IOCTL_MP_ADD_IROUTE CTL_CODE(FILE_DEVICE_UNKNOWN, 17, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define OVPN_IOCTL_MP_DEL_IROUTE CTL_CODE(FILE_DEVICE_UNKNOWN, 18, METHOD_BUFFERED, FILE_ANY_ACCESS)
+
+#define OVPN_IOCTL_GET_PEER_STATS CTL_CODE(FILE_DEVICE_UNKNOWN, 19, METHOD_BUFFERED, FILE_ANY_ACCESS)
