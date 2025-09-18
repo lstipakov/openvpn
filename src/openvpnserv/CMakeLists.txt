@@ -57,11 +57,17 @@ add_custom_command(
 add_custom_target(msg_mc_gen ALL DEPENDS ${MC_GEN_DIR}/eventmsg.rc ${MC_GEN_DIR}/eventmsg.h)
 
 add_library(openvpnservmsg SHARED ${MC_GEN_DIR}/eventmsg.rc)
+add_dependencies(openvpnservmsg msg_mc_gen)
 
 if (MSVC)
-    set_target_properties(openvpnservmsg PROPERTIES LINK_FLAGS "/NOENTRY")
+    target_link_options(openvpnservmsg PRIVATE /NOENTRY)
 else()
-    target_link_options(openvpnservmsg PRIVATE "-Wl,--no-entry")
+    set_target_properties(openvpnservmsg PROPERTIES LINKER_LANGUAGE C OUTPUT_NAME "openvpnservmsg")
+    target_link_options(openvpnservmsg PRIVATE
+        -Wl,--entry=0
+        -nostdlib
+        -nostartfiles
+    )
 endif()
 
 add_dependencies(openvpnservmsg msg_mc_gen)
