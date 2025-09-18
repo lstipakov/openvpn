@@ -61,7 +61,7 @@ add_library(openvpnservmsg SHARED ${MC_GEN_DIR}/eventmsg.rc)
 add_dependencies(openvpnservmsg msg_mc_gen)
 
 if (MSVC)
-    set_target_properties(openvpnservmsg PRIVATE "/NOENTRY")
+    set_target_properties(openvpnservmsg PROPERTIES LINK_FLAGS "/NOENTRY")
 else()
     set_target_properties(openvpnservmsg PROPERTIES LINKER_LANGUAGE C OUTPUT_NAME "openvpnservmsg")
     target_link_options(openvpnservmsg PRIVATE
