@@ -342,3 +342,48 @@ CheckOption(const WCHAR *workdir, int argc, WCHAR *argv[], const settings_t *s)
 
     return TRUE;
 }
+
+BOOL
+ValidateServicePipeClient(HANDLE pipe, const settings_t *s)
+{
+    ULONG clientPID = 0;
+    if (!GetNamedPipeClientProcessId(pipe, &clientPID))
+    {
+        MsgToEventLog(M_SYSERR, L"GetNamedPipeClientProcessId() failed");
+        return FALSE;
+    }
+
+    HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, clientPID);
+    if (hProc == NULL)
+    {
+        MsgToEventLog(M_SYSERR, L"OpenProcess() failed");
+        return FALSE;
+    }
+
+    wchar_t path[MAX_PATH] = { 0 };
+    DWORD size = _countof(path);
+    BOOL res = FALSE;
+    if (QueryFullProcessImageNameW(hProc, 0, path, &size))
+    {
+        WCHAR bin_dir[MAX_PATH];
+
+        /* canonicalize bin_dir and add trailing slash before comparison */
+        HRESULT hr = PathCchCanonicalizeEx(bin_dir, _countof(bin_dir), s->bin_dir,
+                                           PATHCCH_ENSURE_TRAILING_SLASH);
+        if ((hr == S_OK) && wcsncmp(bin_dir, path, wcslen(bin_dir)) == 0)
+        {
+            res = TRUE;
+        }
+        else
+        {
+            MsgToEventLog(M_ERR, L"Reject client from untrusted path %ls", path);
+        }
+    }
+    else
+    {
+        MsgToEventLog(M_SYSERR, L"QueryFullProcessImageNameW() failed");
+    }
+    CloseHandle(hProc);
+
+    return res;
+}

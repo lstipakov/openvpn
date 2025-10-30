@@ -49,4 +49,8 @@ IsOption(const WCHAR *o)
     return (wcsncmp(o, L"--", 2) == 0);
 }
 
+/* Ensures that the service pipe client (openvpn-gui process)
+ * is from OpenVPN binary directory */
+BOOL ValidateServicePipeClient(HANDLE pipe, const settings_t *s);
+
 #endif /* ifndef VALIDATE_H */

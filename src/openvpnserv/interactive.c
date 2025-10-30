@@ -3275,6 +3275,12 @@ RunOpenvpn(LPVOID p)
     ZeroMemory(&undo_lists, sizeof(undo_lists));
     ZeroMemory(&proc_info, sizeof(proc_info));
 
+    if (!ValidateServicePipeClient(pipe, &settings))
+    {
+        ReturnError(pipe, ERROR_ACCESS_DENIED, L"ValidateServicePipeClient", 1, &exit_event);
+        goto out;
+    }
+
     if (!GetStartupData(pipe, &sud))
     {
         goto out;
