@@ -245,6 +245,9 @@ endif()
 check_symbol_exists(chsize io.h HAVE_CHSIZE)
 check_symbol_exists(getrlimit sys/resource.h HAVE_GETRLIMIT)
 
+# Some old versions of mingw does not have PATHCCH_OPTIONS enums -- add a check
+check_symbol_exists(PATHCCH_ENSURE_TRAILING_SLASH pathcch.h HAVE_PATHCCH_ENSURE_TRAILING_SLASH)
+
 # Some OS (e.g. FreeBSD) need some basic headers to allow
 # including network headers
 set(NETEXTRA sys/types.h)
@@ -338,7 +341,7 @@ function(add_library_deps target)
         if (WIN32)
             target_link_libraries(${target} PUBLIC
                 ws2_32.lib crypt32.lib fwpuclnt.lib iphlpapi.lib
-                wininet.lib setupapi.lib rpcrt4.lib wtsapi32.lib ncrypt.lib bcrypt.lib)
+                wininet.lib setupapi.lib rpcrt4.lib wtsapi32.lib ncrypt.lib bcrypt.lib pathcch.lib)
         endif ()
 
     endif ()
