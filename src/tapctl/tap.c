@@ -921,6 +921,45 @@ tap_enable_adapter(_In_opt_ HWND hwndParent, _In_ LPCGUID pguidAdapter, _In_ BOO
                                     bEnable ? enable_device : disable_device, pbRebootRequired);
 }
 
+/**
+ * Check whether a proposed adapter name satisfies Windows connection-name rules.
+ *
+ * Tabs, control characters (except space), and the following characters are disallowed:
+ * \ / : * ? " < > |
+ * Names must also be non-empty and no longer than 255 characters.
+ */
+BOOL
+tap_is_valid_adapter_name(LPCWSTR name)
+{
+    if (name == NULL)
+    {
+        return FALSE;
+    }
+
+    size_t length = wcslen(name);
+    if (length == 0 || length > 255)
+    {
+        return FALSE;
+    }
+
+    static const WCHAR invalid_chars[] = L"\\/:*?\"<>|";
+
+    for (const WCHAR *p = name; *p; ++p)
+    {
+        WCHAR ch = *p;
+        if (ch < L' ')
+        {
+            return FALSE;
+        }
+        if (wcschr(invalid_chars, ch))
+        {
+            return FALSE;
+        }
+    }
+
+    return TRUE;
+}
+
 /* stripped version of ExecCommand in interactive.c */
 static DWORD
 ExecCommand(const WCHAR *cmdline)
@@ -969,6 +1008,13 @@ tap_set_adapter_name(_In_ LPCGUID pguidAdapter, _In_ LPCWSTR szName, _In_ BOOL b
     if (pguidAdapter == NULL || szName == NULL)
     {
         return ERROR_BAD_ARGUMENTS;
+    }
+
+    if (!tap_is_valid_adapter_name(szName))
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        msg(msg_flag, "%s: invalid adapter name \"%ls\"", __FUNCTION__, szName);
+        return ERROR_INVALID_PARAMETER;
     }
 
     /* Get the device class GUID as string. */

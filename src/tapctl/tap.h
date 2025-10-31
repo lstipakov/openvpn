@@ -100,6 +100,8 @@ DWORD
 tap_enable_adapter(_In_opt_ HWND hwndParent, _In_ LPCGUID pguidAdapter, _In_ BOOL bEnable,
                    _Inout_ LPBOOL pbRebootRequired);
 
+BOOL
+tap_is_valid_adapter_name(LPCWSTR name);
 
 /**
  * Sets adapter name.
