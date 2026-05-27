@@ -882,7 +882,10 @@ init_route_ipv6_list(struct route_ipv6_list *rl6, const struct route_ipv6_option
     return ret;
 }
 
-static bool
+/* Returns RTA_SUCCESS, RTA_EEXIST or RTA_ERROR. RTA_EEXIST means the
+ * route was already present in the system and was not added by us; the
+ * caller must not delete it on undo. */
+static int
 add_route3(in_addr_t network, in_addr_t netmask, in_addr_t gateway, const struct tuntap *tt,
            unsigned int flags, const struct route_gateway_info *rgi, const struct env_set *es,
            openvpn_net_ctx_t *ctx)
@@ -893,7 +896,11 @@ add_route3(in_addr_t network, in_addr_t netmask, in_addr_t gateway, const struct
     r.network = network;
     r.netmask = netmask;
     r.gateway = gateway;
-    return add_route(&r, tt, flags, rgi, es, ctx);
+    if (!add_route(&r, tt, flags, rgi, es, ctx))
+    {
+        return RTA_ERROR;
+    }
+    return (r.flags & RT_ADDED) ? RTA_SUCCESS : RTA_EEXIST;
 }
 
 static void
@@ -915,14 +922,19 @@ add_bypass_routes(struct route_bypass *rb, in_addr_t gateway, const struct tunta
                   unsigned int flags, const struct route_gateway_info *rgi,
                   const struct env_set *es, openvpn_net_ctx_t *ctx)
 {
-    int ret = true;
+    bool ret = true;
+    rb->bypass_added = 0;
     for (int i = 0; i < rb->n_bypass; ++i)
     {
         if (rb->bypass[i])
         {
-            ret = add_route3(rb->bypass[i], IPV4_NETMASK_HOST, gateway, tt, flags | ROUTE_REF_GW,
-                             rgi, es, ctx)
-                  && ret;
+            int status = add_route3(rb->bypass[i], IPV4_NETMASK_HOST, gateway, tt,
+                                    flags | ROUTE_REF_GW, rgi, es, ctx);
+            if (status == RTA_SUCCESS)
+            {
+                rb->bypass_added |= (1u << i);
+            }
+            ret = (status != RTA_ERROR) && ret;
         }
     }
     return ret;
@@ -933,15 +945,15 @@ del_bypass_routes(struct route_bypass *rb, in_addr_t gateway, const struct tunta
                   unsigned int flags, const struct route_gateway_info *rgi,
                   const struct env_set *es, openvpn_net_ctx_t *ctx)
 {
-    int i;
-    for (i = 0; i < rb->n_bypass; ++i)
+    for (int i = 0; i < rb->n_bypass; ++i)
     {
-        if (rb->bypass[i])
+        if (rb->bypass[i] && (rb->bypass_added & (1u << i)))
         {
             del_route3(rb->bypass[i], IPV4_NETMASK_HOST, gateway, tt, flags | ROUTE_REF_GW, rgi, es,
                        ctx);
         }
     }
+    rb->bypass_added = 0;
 }
 
 static bool
@@ -996,12 +1008,16 @@ redirect_default_route_to_vpn(struct route_list *rl, const struct tuntap *tt, un
                 if ((rl->spec.flags & RTSA_REMOTE_HOST)
                     && rl->spec.remote_host != IPV4_INVALID_ADDR)
                 {
-                    ret = add_route3(rl->spec.remote_host, IPV4_NETMASK_HOST, rl->rgi.gateway.addr,
-                                     tt, flags | ROUTE_REF_GW, &rl->rgi, es, ctx);
-                    if (ret)
+                    int status = add_route3(rl->spec.remote_host, IPV4_NETMASK_HOST,
+                                            rl->rgi.gateway.addr, tt, flags | ROUTE_REF_GW,
+                                            &rl->rgi, es, ctx);
+                    /* only flag as ours-to-undo when we actually added it;
+                     * a pre-existing route (RTA_EEXIST) must survive disconnect */
+                    if (status == RTA_SUCCESS)
                     {
                         rl->iflags |= RL_DID_LOCAL;
                     }
+                    ret = (status != RTA_ERROR);
                 }
                 else
                 {
@@ -1020,13 +1036,15 @@ redirect_default_route_to_vpn(struct route_list *rl, const struct tuntap *tt, un
                 if (rl->flags & RG_DEF1)
                 {
                     /* add new default route (1st component) */
-                    ret = add_route3(0x00000000, 0x80000000, rl->spec.remote_endpoint, tt, flags,
-                                     &rl->rgi, es, ctx)
+                    ret = (add_route3(0x00000000, 0x80000000, rl->spec.remote_endpoint, tt, flags,
+                                      &rl->rgi, es, ctx)
+                           != RTA_ERROR)
                           && ret;
 
                     /* add new default route (2nd component) */
-                    ret = add_route3(0x80000000, 0x80000000, rl->spec.remote_endpoint, tt, flags,
-                                     &rl->rgi, es, ctx)
+                    ret = (add_route3(0x80000000, 0x80000000, rl->spec.remote_endpoint, tt, flags,
+                                      &rl->rgi, es, ctx)
+                           != RTA_ERROR)
                           && ret;
                 }
                 else
@@ -1040,7 +1058,8 @@ redirect_default_route_to_vpn(struct route_list *rl, const struct tuntap *tt, un
                     }
 
                     /* add new default route */
-                    ret = add_route3(0, 0, rl->spec.remote_endpoint, tt, flags, &rl->rgi, es, ctx)
+                    ret = (add_route3(0, 0, rl->spec.remote_endpoint, tt, flags, &rl->rgi, es, ctx)
+                           != RTA_ERROR)
                           && ret;
                 }
             }

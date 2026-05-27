@@ -54,6 +54,9 @@ struct route_bypass
 #define N_ROUTE_BYPASS 8
     int n_bypass;
     in_addr_t bypass[N_ROUTE_BYPASS];
+    /* bit i set when bypass[i] was actually added by us (so we may delete
+     * it on undo); cleared when the route already existed in the system. */
+    unsigned int bypass_added;
 };
 
 struct route_special_addr
