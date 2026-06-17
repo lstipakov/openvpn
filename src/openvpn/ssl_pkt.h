@@ -58,11 +58,53 @@
  * like P_CONTROL_HARD_RESET_CLIENT_V3 */
 #define P_CONTROL_WKC_V1 11
 
-/* define the range of legal opcodes
+/* Out-of-band control message that does not belong to an established
+ * control channel session (e.g. a server probe). Inherently unreliable:
+ * there is no protocol-level retransmission.
+ *
+ * It is not legal on an established session; see opcode_valid_in_session()
+ * below. */
+#define P_CONTROL_OOB_V1 12
+
+/* define the range of defined opcodes, in- and out-of-band. Note this is not
+ * the set of opcodes legal on an established session; see
+ * opcode_valid_in_session().
  * Since we do no longer support key-method 1 we consider
  * the v1 op codes invalid */
 #define P_FIRST_OPCODE 3
-#define P_LAST_OPCODE  11
+#define P_LAST_OPCODE  12
+
+static inline bool
+opcode_is_oob(int op)
+{
+    return op == P_CONTROL_OOB_V1;
+}
+
+/**
+ * Return true if op may occur on an established control-channel session.
+ *
+ * Out-of-band opcodes may not. They are answered statelessly on the
+ * new-connection path, and being rejected here is a permanent property rather
+ * than a handler that is still missing:
+ *
+ *  - an OOB message carries its TLV payload directly, with no reliability or
+ *    ACK fields (see tls_wrap_oob_standalone()), whereas the established-session
+ *    path parses an ACK array and a control packet-id before anything else. The
+ *    payload is chosen by the sender and session ids are plaintext on the wire,
+ *    so those bytes can be crafted into a valid ACK array, forging ACKs into a
+ *    live control channel and stalling a handshake or rekey.
+ *  - nothing on that path parses an OOB payload, so there is nothing to gain by
+ *    accepting one.
+ *
+ * This cannot be expressed as an opcode range: the inband CONTROL_DATA_V1 of the
+ * wire protocol is legal on an established session, so the OOB opcodes sit
+ * between legal ones.
+ */
+static inline bool
+opcode_valid_in_session(int op)
+{
+    return op >= P_FIRST_OPCODE && op <= P_LAST_OPCODE && !opcode_is_oob(op);
+}
 
 /*
  * Define number of buffers for send and receive in the reliability layer.
@@ -263,6 +305,9 @@ packet_opcode_name(int op)
 
         case P_CONTROL_WKC_V1:
             return "P_CONTROL_WKC_V1";
+
+        case P_CONTROL_OOB_V1:
+            return "P_CONTROL_OOB_V1";
 
         case P_ACK_V1:
             return "P_ACK_V1";
