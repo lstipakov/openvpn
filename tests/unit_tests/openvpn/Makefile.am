@@ -14,6 +14,7 @@ test_binaries = argv_testdriver \
 	ncp_testdriver \
 	mbuf_testdriver \
 	misc_testdriver \
+	oob_testdriver \
 	options_parse_testdriver \
 	packet_id_testdriver \
 	pkt_testdriver \
@@ -148,6 +149,19 @@ packet_id_testdriver_SOURCES = test_packet_id.c \
 	$(top_srcdir)/src/openvpn/reliable.c \
 	$(top_srcdir)/src/openvpn/win32-util.c \
 	$(top_srcdir)/src/openvpn/session_id.c
+
+oob_testdriver_CFLAGS  = \
+	-I$(top_srcdir)/include -I$(top_srcdir)/src/compat -I$(top_srcdir)/src/openvpn \
+	@TEST_CFLAGS@
+oob_testdriver_LDFLAGS = @TEST_LDFLAGS@
+oob_testdriver_SOURCES = test_oob.c \
+	mock_msg.c mock_msg.h test_common.h \
+	mock_get_random.c \
+	$(top_srcdir)/src/openvpn/buffer.c \
+	$(top_srcdir)/src/openvpn/oob.c \
+	$(top_srcdir)/src/openvpn/platform.c \
+	$(top_srcdir)/src/openvpn/session_id.c \
+	$(top_srcdir)/src/openvpn/win32-util.c
 
 pkt_testdriver_CFLAGS  = \
 	-I$(top_srcdir)/include -I$(top_srcdir)/src/compat -I$(top_srcdir)/src/openvpn \

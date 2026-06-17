@@ -58,6 +58,17 @@
  * like P_CONTROL_HARD_RESET_CLIENT_V3 */
 #define P_CONTROL_WKC_V1 11
 
+/* Out-of-band control message that does not belong to an established
+ * control channel session (e.g. a server probe). Inherently unreliable:
+ * there is no protocol-level retransmission.
+ *
+ * NOTE: intentionally not yet included in the P_FIRST_OPCODE..P_LAST_OPCODE
+ * legal range. The range acts as an acceptance gate in tls_pre_decrypt();
+ * widening it before an OOB receive handler exists would let OOB packets
+ * be misparsed as established-session control packets. Bump P_LAST_OPCODE
+ * to 12 in the same change that adds the handler. */
+#define P_CONTROL_OOB_V1 12
+
 /* define the range of legal opcodes
  * Since we do no longer support key-method 1 we consider
  * the v1 op codes invalid */
@@ -265,6 +276,9 @@ packet_opcode_name(int op)
 
         case P_CONTROL_WKC_V1:
             return "P_CONTROL_WKC_V1";
+
+        case P_CONTROL_OOB_V1:
+            return "P_CONTROL_OOB_V1";
 
         case P_ACK_V1:
             return "P_ACK_V1";
