@@ -3676,7 +3676,7 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from, 
     struct session_id sid; /* remote session ID */
 
     /* verify legal opcode */
-    if (op < P_FIRST_OPCODE || op > P_LAST_OPCODE)
+    if (!opcode_valid_in_session(op))
     {
         if (op == P_CONTROL_HARD_RESET_CLIENT_V1 || op == P_CONTROL_HARD_RESET_SERVER_V1)
         {

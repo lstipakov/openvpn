@@ -167,7 +167,7 @@ write_control_auth(struct tls_session *session, struct key_state *ks, struct buf
                    bool prepend_ack)
 {
     ASSERT(ks->key_id >= 0 && ks->key_id <= P_KEY_ID_MASK);
-    ASSERT(opcode >= 0 && opcode <= P_LAST_OPCODE);
+    ASSERT(opcode_valid_in_session(opcode));
     uint8_t header = (uint8_t)(ks->key_id | (opcode << P_OPCODE_SHIFT));
 
     /* Workaround for Softether servers. Softether has a bug that it only
