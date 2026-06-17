@@ -41,6 +41,8 @@
 
 /* TLV types */
 #define TLV_TYPE_EARLY_NEG_FLAGS 0x0001 /* early negotiation, in the reset packets */
+#define TLV_TYPE_PROBE_REQUEST   0x0002 /* out-of-band, sent by a client probing a server */
+#define TLV_TYPE_PROBE_REPLY     0x0003 /* out-of-band, a server's answer to a probe request */
 
 /* TLV header bit layout of the first 16-bit field */
 #define CTRL_MSG_TLV_OPTIONAL_FLAG 0x8000
@@ -96,5 +98,29 @@ bool ctrl_msg_tlv_read_header(struct buffer *buf, struct ctrl_msg_tlv_header *hd
  *         may then be left partly consumed.
  */
 bool ctrl_msg_tlv_next(struct buffer *buf, struct ctrl_msg_tlv_header *hdr, struct buffer *value);
+
+/**
+ * Scan payload for the TLV of type wanted_type, skipping any other (e.g.
+ * future) TLV type that is marked optional.
+ *
+ * This is for messages that carry exactly one mandatory TLV, which matches the
+ * currently supported OOB messages: any other TLV that is not marked optional
+ * invalidates the message wherever it is present, as does a second TLV of
+ * wanted_type, so the whole sequence is walked. A message with several
+ * mandatory TLVs walks them with ctrl_msg_tlv_next() instead.
+ *
+ * On success value covers exactly the found TLV's value bytes; as with
+ * ctrl_msg_tlv_next(), a header claiming more bytes than payload holds is
+ * rejected rather than reported as found. payload is consumed as it is read.
+ *
+ * @param payload      buffer positioned at a TLV header
+ * @param wanted_type  the TLV type to look for
+ * @param value        set to a buffer covering the found TLV's value; it points
+ *                     into payload and owns no storage
+ * @return true if the TLV was found, false if it is not present or present
+ *         more than once, a TLV header or value is malformed or truncated, or a
+ *         TLV we do not understand is not marked optional.
+ */
+bool ctrl_msg_find_tlv(struct buffer *payload, uint16_t wanted_type, struct buffer *value);
 
 #endif /* ifndef CONTROL_MSG_H */

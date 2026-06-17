@@ -46,6 +46,7 @@
 #include "siphash.h"
 
 int run_control_msg_tests(void); /* test_control_msg.c */
+int run_oob_tests(void);         /* test_oob.c */
 
 int
 parse_line(const char *line, char **p, const int n, const char *file, const int line_num,
@@ -794,5 +795,6 @@ main(void)
 
     int failed = cmocka_run_group_tests_name("pkt tests", tests, NULL, NULL);
     failed += run_control_msg_tests();
+    failed += run_oob_tests();
     return failed ? 1 : 0;
 }
