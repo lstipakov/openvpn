@@ -445,6 +445,8 @@ set(SOURCE_FILES
     src/openvpn/console.c
     src/openvpn/console_builtin.c
     src/openvpn/console.h
+    src/openvpn/control_msg.c
+    src/openvpn/control_msg.h
     src/openvpn/crypto.c
     src/openvpn/crypto.h
     src/openvpn/crypto_backend.h
@@ -523,6 +525,8 @@ set(SOURCE_FILES
     src/openvpn/multi_io.c
     src/openvpn/occ.c
     src/openvpn/occ.h
+    src/openvpn/oob.c
+    src/openvpn/oob.h
     src/openvpn/openvpn.c
     src/openvpn/openvpn.h
     src/openvpn/openvpn_win32_resources.rc
@@ -883,6 +887,9 @@ if (BUILD_TESTING)
 
     target_sources(test_pkt PRIVATE
         tests/unit_tests/openvpn/mock_win32_execve.c
+        tests/unit_tests/openvpn/test_oob.c
+        src/openvpn/control_msg.c
+        src/openvpn/oob.c
         src/openvpn/argv.c
         src/openvpn/base64.c
         src/openvpn/crypto_epoch.c

@@ -44,6 +44,8 @@
 #include "reliable.h"
 #include "siphash.h"
 
+int run_oob_tests(void); /* test_oob.c */
+
 int
 parse_line(const char *line, char **p, const int n, const char *file, const int line_num,
            msglvl_t msglevel, struct gc_arena *gc)
@@ -748,5 +750,7 @@ main(void)
         cmocka_unit_test(test_extract_control_message)
     };
 
-    return cmocka_run_group_tests_name("pkt tests", tests, NULL, NULL);
+    int failed = cmocka_run_group_tests_name("pkt tests", tests, NULL, NULL);
+    failed += run_oob_tests();
+    return failed ? 1 : 0;
 }

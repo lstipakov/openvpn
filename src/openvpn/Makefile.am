@@ -53,6 +53,7 @@ openvpn_SOURCES = \
 	common.h \
 	comp.c comp.h compstub.c \
 	comp-lz4.c comp-lz4.h \
+	control_msg.c control_msg.h \
 	crypto.c crypto.h crypto_backend.h \
 	crypto_openssl.c crypto_openssl.h \
 	crypto_mbedtls_legacy.c crypto_mbedtls_legacy.h \
@@ -107,6 +108,7 @@ openvpn_SOURCES = \
 	pkcs11.c pkcs11.h pkcs11_backend.h \
 	pkcs11_openssl.c \
 	pkcs11_mbedtls.c \
+	oob.c oob.h \
 	openvpn.c openvpn.h \
 	options.c options.h \
 	options_show.c options_show.h \

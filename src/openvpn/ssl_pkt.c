@@ -168,6 +168,8 @@ write_control_auth(struct tls_session *session, struct key_state *ks, struct buf
 {
     ASSERT(ks->key_id >= 0 && ks->key_id <= P_KEY_ID_MASK);
     ASSERT(opcode >= 0 && opcode <= P_LAST_OPCODE);
+    /* OOB packets carry no message id or ACK array */
+    ASSERT(!opcode_is_oob(opcode));
     uint8_t header = (uint8_t)(ks->key_id | (opcode << P_OPCODE_SHIFT));
 
     /* Workaround for Softether servers. Softether has a bug that it only
