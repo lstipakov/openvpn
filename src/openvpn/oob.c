@@ -112,6 +112,23 @@ oob_client_reply_write(struct buffer *buf, const struct oob_probe_reply *reply)
 }
 
 bool
+oob_client_reply_read(struct buffer *payload, struct oob_probe_reply *reply)
+{
+    if (!ctrl_msg_read_header(payload, OOB_MSG_PROBE_REPLY))
+    {
+        return false;
+    }
+
+    struct buffer value;
+    if (!ctrl_msg_find_tlv(payload, OOB_TLV_PROBE_REPLY, &value))
+    {
+        return false;
+    }
+
+    return oob_probe_reply_read(&value, reply);
+}
+
+bool
 oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
 {
     uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);
