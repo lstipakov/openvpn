@@ -62,8 +62,9 @@
  * control channel session (e.g. a server probe). Inherently unreliable:
  * there is no protocol-level retransmission.
  *
- * It is not legal on an established session; see opcode_valid_in_session()
- * below. */
+ * On the server this is accepted via the tls_pre_decrypt_lite() allowlist and
+ * handled in the new-connection path (it never creates a session). It is not
+ * legal on an established session; see opcode_valid_in_session() below. */
 #define P_CONTROL_OOB_V1 12
 
 /* define the range of defined opcodes, in- and out-of-band. Note this is not
@@ -136,6 +137,9 @@ enum first_packet_verdict
     VERDICT_VALID_ACK_V1,
     /** The packet is a valid control packet with appended wrapped client key */
     VERDICT_VALID_WKC_V1,
+    /** This packet is a valid out-of-band control message (e.g. a server
+     * probe). It does not belong to a session and must not create one. */
+    VERDICT_VALID_OOB_V1,
     /** the packet failed on of the various checks */
     VERDICT_INVALID
 };
@@ -255,6 +259,21 @@ bool read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
 struct buffer tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
                                    struct session_id *own_sid, struct session_id *remote_sid,
                                    uint8_t header, bool request_resend_wkc);
+
+/**
+ * Wrap an already-built out-of-band payload (e.g. probe-reply TLVs) into a
+ * standalone, session-less P_CONTROL_OOB_V1 packet: it prepends the opcode and
+ * own_sid and applies the same tls-auth/tls-crypt wrapping as a regular
+ * control packet, but carries no reliability/ACK fields.
+ *
+ * @param ctx       tls wrapping context (from the pre-decrypt state)
+ * @param tas       standalone auth context providing the work buffer
+ * @param own_sid   session id to use as our session id in the header
+ * @param payload   the OOB message payload (TLV stream) to wrap
+ * @return          the wrapped packet buffer, ready to send
+ */
+struct buffer tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
+                                      struct session_id *own_sid, const struct buffer *payload);
 
 
 /**

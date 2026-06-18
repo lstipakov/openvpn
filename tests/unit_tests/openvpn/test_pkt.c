@@ -695,6 +695,113 @@ test_generate_reset_packet_tls_auth(void **ut_state)
     free_tas(&tas_server);
 }
 
+/* Payload every OOB round-trip below wraps: a message header and one TLV. */
+static const uint8_t oob_payload[] = { 0x01, 0x00, 0x00, 0x01, 0x00, 0x04, 0xde, 0xad, 0xbe, 0xef };
+
+/* Wrap oob_payload as a standalone P_CONTROL_OOB_V1 with the client side of a
+ * tls-auth/tls-crypt pair (or none), run it through the server's stateless
+ * first-packet path, and check verdict, recovered session id and payload. */
+static void
+oob_standalone_roundtrip(struct tls_auth_standalone *tas_client,
+                         struct tls_auth_standalone *tas_server)
+{
+    struct link_socket_actual from = { 0 };
+    struct tls_pre_decrypt_state state = { 0 };
+    struct session_id sid = { { 0x0b, 1, 2, 3, 4, 5, 6, 0x0b } };
+
+    struct buffer payload = alloc_buf(64);
+    buf_write(&payload, oob_payload, sizeof(oob_payload));
+
+    /* Client side: opcode + session id + tls-auth/tls-crypt wrapping around the
+     * bare payload, with none of the reliability/ACK fields a control packet
+     * carries. */
+    struct buffer buf =
+        tls_wrap_oob_standalone(&tas_client->tls_wrap, tas_client, &sid, &payload);
+    assert_int_equal((BPTR(&buf))[0] >> P_OPCODE_SHIFT, P_CONTROL_OOB_V1);
+
+    /* Server side: the stateless first-packet path must recognise the opcode,
+     * verify the wrapping and leave exactly the payload in newbuf -- that is
+     * what mudp.c hands to the probe parser. */
+    enum first_packet_verdict verdict = tls_pre_decrypt_lite(tas_server, &state, &from, &buf);
+    assert_int_equal(verdict, VERDICT_VALID_OOB_V1);
+    assert_memory_equal(state.peer_session_id.id, sid.id, SID_SIZE);
+    assert_int_equal(BLEN(&state.newbuf), (int)sizeof(oob_payload));
+    assert_memory_equal(BPTR(&state.newbuf), oob_payload, sizeof(oob_payload));
+    free_tls_pre_decrypt_state(&state);
+
+    /* Tampering with any single byte must fail authentication: the flip runs
+     * over opcode, session id, packet id, HMAC/tag and payload alike. Skipped
+     * for TLS_WRAP_NONE, where a changed payload is legitimately accepted. */
+    if (tas_server->tls_wrap.mode != TLS_WRAP_NONE)
+    {
+        struct buffer copy = alloc_buf(BLEN(&buf));
+        for (int i = 0; i < BLEN(&buf); i++)
+        {
+            buf_reset_len(&copy);
+            buf_write(&copy, BPTR(&buf), BLEN(&buf));
+            (BPTR(&copy))[i] ^= 0xff;
+            struct tls_pre_decrypt_state tstate = { 0 };
+            verdict = tls_pre_decrypt_lite(tas_server, &tstate, &from, &copy);
+            assert_int_equal(verdict, VERDICT_INVALID);
+            free_tls_pre_decrypt_state(&tstate);
+        }
+        free_buf(&copy);
+    }
+
+    free_buf(&payload);
+}
+
+static void
+test_oob_standalone_plain(void **ut_state)
+{
+    struct tls_auth_standalone tas = { 0 };
+    struct frame frame = { .buf = { .headroom = 200, .payload_size = 1400 }, 0 };
+    tas.frame = frame;
+    tas.tls_wrap.mode = TLS_WRAP_NONE;
+    tas.workbuf = alloc_buf(1600);
+
+    oob_standalone_roundtrip(&tas, &tas);
+
+    free_tas(&tas);
+}
+
+static void
+test_oob_standalone_tls_auth(void **ut_state)
+{
+    struct tls_auth_standalone tas_server = init_tas_auth(KEY_DIRECTION_NORMAL);
+    struct tls_auth_standalone tas_client = init_tas_auth(KEY_DIRECTION_INVERSE);
+    packet_id_init(&tas_client.tls_wrap.opt.packet_id, 5, 5, "UNITTEST", 0);
+    /* the server consumes the tls-auth packet id only with packet-id state,
+     * which tls_auth_standalone_init() sets up for the real one */
+    packet_id_init(&tas_server.tls_wrap.opt.packet_id, 5, 5, "UNITTEST", 0);
+
+    now = 0x22446688;
+    oob_standalone_roundtrip(&tas_client, &tas_server);
+
+    packet_id_free(&tas_client.tls_wrap.opt.packet_id);
+    packet_id_free(&tas_server.tls_wrap.opt.packet_id);
+    free_tas(&tas_client);
+    free_tas(&tas_server);
+}
+
+static void
+test_oob_standalone_tls_crypt(void **ut_state)
+{
+    struct frame frame = { .buf = { .headroom = 200, .payload_size = 1400 }, 0 };
+    struct tls_auth_standalone tas_server = init_tas_crypt(true);
+    struct tls_auth_standalone tas_client = init_tas_crypt(false);
+    tas_server.frame = frame;
+    tas_client.frame = frame;
+    packet_id_init(&tas_client.tls_wrap.opt.packet_id, 5, 5, "UNITTEST", 0);
+
+    now = 0x22446688;
+    oob_standalone_roundtrip(&tas_client, &tas_server);
+
+    packet_id_free(&tas_client.tls_wrap.opt.packet_id);
+    free_tas(&tas_client);
+    free_tas(&tas_server);
+}
+
 static void
 test_extract_control_message(void **ut_state)
 {
@@ -745,6 +852,9 @@ main(void)
         cmocka_unit_test(test_verify_hmac_none_out_of_range_ack),
         cmocka_unit_test(test_generate_reset_packet_plain),
         cmocka_unit_test(test_generate_reset_packet_tls_auth),
+        cmocka_unit_test(test_oob_standalone_plain),
+        cmocka_unit_test(test_oob_standalone_tls_auth),
+        cmocka_unit_test(test_oob_standalone_tls_crypt),
         cmocka_unit_test(test_extract_control_message)
     };
 
