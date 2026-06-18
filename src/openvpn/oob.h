@@ -99,4 +99,49 @@ bool oob_probe_reply_write(struct buffer *buf, const struct oob_probe_reply *r);
  */
 bool oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r);
 
+/**
+ * Scan the payload of a received OOB message for the probe request TLV.
+ * Unknown TLV types marked optional are skipped; an unknown mandatory one
+ * rejects the message. payload is consumed as it is read.
+ *
+ * @param payload  buffer positioned at the start of the OOB message payload
+ * @param req      filled with the parsed probe request on success
+ * @return true if a well-formed probe request was found, false otherwise
+ */
+bool oob_probe_request_find(struct buffer *payload, struct oob_probe_request *req);
+
+/**
+ * Check whether a probe timestamp is within an acceptable window around the
+ * current time. Used to cheaply drop replayed or implausibly-timed probes
+ * before doing any further work (see the probe request timestamp rationale
+ * in the wire protocol specification).
+ *
+ * @param probe_ts     timestamp from the probe request (UNIX seconds)
+ * @param now          current time (UNIX seconds)
+ * @param window_secs  maximum allowed difference, in either direction
+ * @return true if |now - probe_ts| <= window_secs
+ */
+bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs);
+
+enum oob_probe_verdict
+{
+    OOB_PROBE_INVALID, /**< no valid probe request: drop */
+    OOB_PROBE_STALE,   /**< well-formed, timestamp outside the window */
+    OOB_PROBE_OK,      /**< well-formed, timestamp within the window */
+};
+
+/**
+ * Classify a received probe request. Combines oob_probe_request_find() and
+ * oob_timestamp_in_window(). This is the transport-agnostic decision step;
+ * the caller decides what to do with a stale probe and builds the reply.
+ *
+ * @param probe_payload  payload of the received OOB message, consumed
+ * @param now            current time (UNIX seconds)
+ * @param window_secs    acceptable timestamp skew, in either direction
+ * @param req            filled with the probe request unless the verdict is
+ *                       OOB_PROBE_INVALID, for the reply to echo its request_id
+ */
+enum oob_probe_verdict oob_probe_request_check(struct buffer *probe_payload, uint64_t now,
+                                               uint64_t window_secs, struct oob_probe_request *req);
+
 #endif /* OOB_H */

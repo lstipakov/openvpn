@@ -364,6 +364,195 @@ test_find_tlv_empty_payload(void **state)
     gc_free(&gc);
 }
 
+/* A payload of just a probe request is found by the scan, along with its
+ * request_id. */
+static void
+test_probe_request_find(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    const struct oob_probe_request in = {
+        .request_id = 42,
+        .timestamp = 0x1122334455667788ULL,
+        .flags = 0,
+    };
+    assert_true(oob_probe_request_write(&buf, &in));
+
+    struct oob_probe_request out = { 0 };
+    assert_true(oob_probe_request_find(&buf, &out));
+    assert_int_equal(out.request_id, 42);
+    assert_true(in.timestamp == out.timestamp);
+    assert_int_equal(in.flags, out.flags);
+
+    gc_free(&gc);
+}
+
+/* TLVs other than probe request are skipped, so the scan finds the
+ * probe request even when preceded by an unknown TLV. */
+static void
+test_probe_request_find_skips_unknown(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    /* An unknown but optional TLV (type 0x7ff) ... */
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0xcafef00d));
+    /* ... followed by the real probe request */
+    const struct oob_probe_request in = { .timestamp = 42, .flags = 0 };
+    assert_true(oob_probe_request_write(&buf, &in));
+
+    struct oob_probe_request out = { 0 };
+    assert_true(oob_probe_request_find(&buf, &out));
+    assert_true(out.timestamp == 42);
+
+    gc_free(&gc);
+}
+
+/* An unknown TLV that is NOT marked optional carries something the sender
+ * requires us to act on: the whole message is rejected, whether that TLV comes
+ * before or after the one we were looking for. */
+static void
+test_probe_request_find_rejects_unknown_mandatory(void **state)
+{
+    struct gc_arena gc = gc_new();
+    const struct oob_probe_request in = { .timestamp = 42, .flags = 0 };
+
+    struct buffer before = alloc_buf_gc(128, &gc);
+    assert_true(ctrl_msg_tlv_write_header(&before, 0x7ff, false, 4));
+    assert_true(buf_write_u32(&before, 0xcafef00d));
+    assert_true(oob_probe_request_write(&before, &in));
+
+    struct buffer after = alloc_buf_gc(128, &gc);
+    assert_true(oob_probe_request_write(&after, &in));
+    assert_true(ctrl_msg_tlv_write_header(&after, 0x7ff, false, 4));
+    assert_true(buf_write_u32(&after, 0xcafef00d));
+
+    struct oob_probe_request out = { 0 };
+    assert_false(oob_probe_request_find(&before, &out));
+    assert_false(oob_probe_request_find(&after, &out));
+
+    gc_free(&gc);
+}
+
+/* A payload with no probe request must be rejected. */
+static void
+test_probe_request_find_missing(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0));
+
+    struct oob_probe_request out = { 0 };
+    assert_false(oob_probe_request_find(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* A TLV whose declared length runs past the buffer must be rejected, not
+ * read out of bounds. */
+static void
+test_probe_request_find_truncated(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    /* TLV header claims a 16-byte value but no value bytes follow */
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, false, 16));
+
+    struct oob_probe_request out = { 0 };
+    assert_false(oob_probe_request_find(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* A payload carrying a probe reply instead holds no probe request. */
+static void
+test_probe_request_find_reply_tlv(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    const struct oob_probe_reply in = { .request_id = 42 };
+    assert_true(oob_probe_reply_write(&buf, &in));
+
+    struct oob_probe_request out = { 0 };
+    assert_false(oob_probe_request_find(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* Timestamp window check accepts values within the window (either direction)
+ * and rejects values outside it. */
+static void
+test_timestamp_in_window(void **state)
+{
+    const uint64_t now = 1000000;
+    const uint64_t window = 30;
+
+    assert_true(oob_timestamp_in_window(now, now, window));
+    assert_true(oob_timestamp_in_window(now - window, now, window));      /* boundary, past */
+    assert_true(oob_timestamp_in_window(now + window, now, window));      /* boundary, future */
+    assert_false(oob_timestamp_in_window(now - window - 1, now, window)); /* too old */
+    assert_false(oob_timestamp_in_window(now + window + 1, now, window)); /* too far ahead */
+}
+
+/* A well-formed probe with an in-window timestamp is answered. */
+static void
+test_probe_request_check_valid(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    const uint64_t now = 1000000;
+    const struct oob_probe_request probe = { .request_id = 1, .timestamp = now, .flags = 0 };
+    assert_true(oob_probe_request_write(&buf, &probe));
+
+    struct oob_probe_request req = { 0 };
+    assert_int_equal(oob_probe_request_check(&buf, now, 30, &req), OOB_PROBE_OK);
+    assert_int_equal(req.request_id, 1);
+
+    gc_free(&gc);
+}
+
+/* A well-formed probe whose timestamp is outside the window is stale; the
+ * caller decides whether it still gets an answer. */
+static void
+test_probe_request_check_stale(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    const uint64_t now = 1000000;
+    const struct oob_probe_request probe = { .request_id = 7, .timestamp = now - 1000, .flags = 0 };
+    assert_true(oob_probe_request_write(&buf, &probe));
+
+    struct oob_probe_request req = { 0 };
+    assert_int_equal(oob_probe_request_check(&buf, now, 30, &req), OOB_PROBE_STALE);
+    assert_int_equal(req.request_id, 7); /* a stale probe may still be answered */
+
+    gc_free(&gc);
+}
+
+/* A payload without a probe request is invalid (no reply). */
+static void
+test_probe_request_check_no_request(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0));
+
+    struct oob_probe_request req;
+    assert_int_equal(oob_probe_request_check(&buf, 1000000, 30, &req), OOB_PROBE_INVALID);
+
+    gc_free(&gc);
+}
+
 /* The OOB tests run as a second group of pkt_testdriver; see test_pkt.c. */
 int
 run_oob_tests(void)
@@ -380,6 +569,16 @@ run_oob_tests(void)
         cmocka_unit_test(test_find_tlv_skips_optional_after_wanted),
         cmocka_unit_test(test_find_tlv_rejects_duplicate),
         cmocka_unit_test(test_find_tlv_empty_payload),
+        cmocka_unit_test(test_probe_request_find),
+        cmocka_unit_test(test_probe_request_find_skips_unknown),
+        cmocka_unit_test(test_probe_request_find_rejects_unknown_mandatory),
+        cmocka_unit_test(test_probe_request_find_missing),
+        cmocka_unit_test(test_probe_request_find_truncated),
+        cmocka_unit_test(test_probe_request_find_reply_tlv),
+        cmocka_unit_test(test_timestamp_in_window),
+        cmocka_unit_test(test_probe_request_check_valid),
+        cmocka_unit_test(test_probe_request_check_stale),
+        cmocka_unit_test(test_probe_request_check_no_request),
     };
 
     return cmocka_run_group_tests_name("oob tests", tests, NULL, NULL);

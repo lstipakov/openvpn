@@ -83,3 +83,30 @@ oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r)
     r->flags = (uint16_t)buf_read_u16(buf);
     return true;
 }
+
+bool
+oob_probe_request_find(struct buffer *payload, struct oob_probe_request *req)
+{
+    struct buffer value;
+    return ctrl_msg_find_tlv(payload, TLV_TYPE_PROBE_REQUEST, &value)
+           && oob_probe_request_read(&value, req);
+}
+
+bool
+oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
+{
+    uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);
+    return diff <= window_secs;
+}
+
+enum oob_probe_verdict
+oob_probe_request_check(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
+                        struct oob_probe_request *req)
+{
+    if (!oob_probe_request_find(probe_payload, req))
+    {
+        return OOB_PROBE_INVALID;
+    }
+    return oob_timestamp_in_window(req->timestamp, now, window_secs) ? OOB_PROBE_OK
+                                                                     : OOB_PROBE_STALE;
+}
