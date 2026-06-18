@@ -178,6 +178,7 @@ struct multi_context
     struct ifconfig_pool *ifconfig_pool;
     struct frequency_limit *new_connection_limiter;
     struct initial_packet_rate_limit *initial_rate_limiter;
+    struct initial_packet_rate_limit *stale_probe_limiter; /**< stale SERVER_PROBE answers */
     struct mroute_helper *route_helper;
     struct multi_reap *reaper;
     struct mroute_addr local;

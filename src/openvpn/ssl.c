@@ -3706,7 +3706,8 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from, 
     struct session_id sid; /* remote session ID */
 
     /* verify legal opcode. An out-of-band packet has no control message id and
-     * no ACK array, which is what we parse next. */
+     * no ACK array, which is what we parse next; do_pre_decrypt_check() answers
+     * those. */
     if (op < P_FIRST_OPCODE || op > P_LAST_OPCODE || opcode_is_oob(op))
     {
         if (op == P_CONTROL_HARD_RESET_CLIENT_V1 || op == P_CONTROL_HARD_RESET_SERVER_V1)

@@ -115,6 +115,18 @@ oob_server_probe_read(struct buffer *payload, uint32_t *message_id,
 }
 
 bool
+oob_client_reply_write(struct buffer *buf, uint32_t message_id, uint32_t response_id,
+                       const struct oob_probe_reply *reply)
+{
+    const struct ctrl_msg_header hdr = {
+        .type = OOB_MSG_PROBE_REPLY,
+        .message_id = message_id,
+        .response_id = response_id,
+    };
+    return ctrl_msg_write_header(buf, &hdr) && oob_probe_reply_write(buf, reply);
+}
+
+bool
 oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
 {
     uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);

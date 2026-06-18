@@ -131,6 +131,14 @@ bool oob_server_probe_read(struct buffer *payload, uint32_t *message_id,
                            struct oob_probe_parameter *param);
 
 /**
+ * Write a complete PROBE_REPLY message (message header + probe_reply TLV) to
+ * buf. Sent by the server; response_id is the message_id of the SERVER_PROBE
+ * being answered.
+ */
+bool oob_client_reply_write(struct buffer *buf, uint32_t message_id, uint32_t response_id,
+                            const struct oob_probe_reply *reply);
+
+/**
  * Check whether a probe timestamp is within an acceptable window around the
  * current time. Used to cheaply drop replayed or implausibly-timed probes
  * before doing any further work (see the probe_parameter timestamp rationale

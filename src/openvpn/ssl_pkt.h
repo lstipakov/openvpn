@@ -60,7 +60,8 @@
 
 /* Out-of-band control message, e.g. a server probe. Not part of the reliable
  * control channel: no control message id and no ACK array, just a message
- * header and TLVs after the session id; never handled by tls_pre_decrypt(). */
+ * header and TLVs after the session id. Answered statelessly in
+ * do_pre_decrypt_check(), never handled by tls_pre_decrypt(). */
 #define P_CONTROL_OOB_V1 12
 
 /* define the range of defined opcodes, in- and out-of-band
@@ -106,6 +107,9 @@ enum first_packet_verdict
     VERDICT_VALID_ACK_V1,
     /** The packet is a valid control packet with appended wrapped client key */
     VERDICT_VALID_WKC_V1,
+    /** This packet is a valid out-of-band control message (e.g. a server
+     * probe). It does not belong to a session and must not create one. */
+    VERDICT_VALID_OOB_V1,
     /** the packet failed on of the various checks */
     VERDICT_INVALID
 };
@@ -225,6 +229,21 @@ bool read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
 struct buffer tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
                                    struct session_id *own_sid, struct session_id *remote_sid,
                                    uint8_t header, bool request_resend_wkc);
+
+/**
+ * Wrap an already-built out-of-band message (e.g. a PROBE_REPLY) into a
+ * standalone, session-less P_CONTROL_OOB_V1 packet: it prepends the opcode and
+ * own_sid and applies the same tls-auth/tls-crypt wrapping as a regular
+ * control packet, but carries no reliability/ACK fields.
+ *
+ * @param ctx       tls wrapping context (from the pre-decrypt state)
+ * @param tas       standalone auth context providing the work buffer
+ * @param own_sid   session id to use as our session id in the header
+ * @param payload   the OOB message (header and TLVs) to wrap
+ * @return          the wrapped packet buffer, ready to send
+ */
+struct buffer tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
+                                      struct session_id *own_sid, const struct buffer *payload);
 
 
 /**
