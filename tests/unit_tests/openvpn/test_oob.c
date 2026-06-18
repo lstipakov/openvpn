@@ -508,6 +508,111 @@ test_server_probe_accept_no_parameter(void **state)
     gc_free(&gc);
 }
 
+/* A PROBE_REPLY carrying a probe_reply is found by the client scan, with all
+ * fields surviving. */
+static void
+test_client_reply_read_finds_reply(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    struct oob_probe_reply in = {
+        .priority = 5,
+        .weight = 50,
+        .max_latency_diff = 25,
+        .connect_lifetime = 120,
+        .flags = 1,
+    };
+    memcpy(in.peer_session_id.id, "SRVREPLY", SID_SIZE);
+    assert_true(oob_client_reply_write(&buf, &in));
+
+    struct oob_probe_reply out = { 0 };
+    assert_true(oob_client_reply_read(&buf, &out));
+    assert_memory_equal(out.peer_session_id.id, in.peer_session_id.id, SID_SIZE);
+    assert_int_equal(out.priority, in.priority);
+    assert_int_equal(out.weight, in.weight);
+    assert_int_equal(out.max_latency_diff, in.max_latency_diff);
+    assert_int_equal(out.connect_lifetime, in.connect_lifetime);
+    assert_int_equal(out.flags, in.flags);
+
+    gc_free(&gc);
+}
+
+/* TLVs other than probe_reply are skipped. */
+static void
+test_client_reply_read_skips_unknown(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(buf_write_u16(&buf, OOB_MSG_PROBE_REPLY));
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0xabad1dea));
+    struct oob_probe_reply in = { .priority = 7 };
+    assert_true(oob_probe_reply_write(&buf, &in));
+
+    struct oob_probe_reply out = { 0 };
+    assert_true(oob_client_reply_read(&buf, &out));
+    assert_int_equal(out.priority, 7);
+
+    gc_free(&gc);
+}
+
+/* As on the probe side, a mandatory TLV we do not understand -- here trailing
+ * the probe_reply -- invalidates the reply. */
+static void
+test_client_reply_read_rejects_unknown_mandatory(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(buf_write_u16(&buf, OOB_MSG_PROBE_REPLY));
+    struct oob_probe_reply in = { .priority = 7 };
+    assert_true(oob_probe_reply_write(&buf, &in));
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, false, 4));
+    assert_true(buf_write_u32(&buf, 0xabad1dea));
+
+    struct oob_probe_reply out = { 0 };
+    assert_false(oob_client_reply_read(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* A payload with no probe_reply is rejected. */
+static void
+test_client_reply_read_missing(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(buf_write_u16(&buf, OOB_MSG_PROBE_REPLY));
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0));
+
+    struct oob_probe_reply out = { 0 };
+    assert_false(oob_client_reply_read(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* Likewise, a PROBE_REPLY reader rejects a payload with the wrong message
+ * type even when a valid probe_reply TLV follows. */
+static void
+test_client_reply_read_wrong_msg_type(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(buf_write_u16(&buf, OOB_MSG_SERVER_PROBE));
+    struct oob_probe_reply in = { .priority = 7 };
+    assert_true(oob_probe_reply_write(&buf, &in));
+
+    struct oob_probe_reply out = { 0 };
+    assert_false(oob_client_reply_read(&buf, &out));
+
+    gc_free(&gc);
+}
+
 int
 main(void)
 {
@@ -533,6 +638,11 @@ main(void)
         cmocka_unit_test(test_server_probe_accept_valid),
         cmocka_unit_test(test_server_probe_accept_stale),
         cmocka_unit_test(test_server_probe_accept_no_parameter),
+        cmocka_unit_test(test_client_reply_read_finds_reply),
+        cmocka_unit_test(test_client_reply_read_skips_unknown),
+        cmocka_unit_test(test_client_reply_read_rejects_unknown_mandatory),
+        cmocka_unit_test(test_client_reply_read_missing),
+        cmocka_unit_test(test_client_reply_read_wrong_msg_type),
     };
 
     return cmocka_run_group_tests_name("oob tests", tests, NULL, NULL);
