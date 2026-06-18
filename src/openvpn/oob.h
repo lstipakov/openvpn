@@ -166,6 +166,12 @@ bool oob_server_probe_write(struct buffer *buf, const struct oob_probe_parameter
 bool oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param);
 
 /**
+ * Write a complete PROBE_REPLY message (message-type header + probe_reply TLV)
+ * to @p buf. Sent by the server.
+ */
+bool oob_client_reply_write(struct buffer *buf, const struct oob_probe_reply *reply);
+
+/**
  * Check whether a probe timestamp is within an acceptable window around the
  * current time. Used to cheaply drop replayed or implausibly-timed probes
  * before doing any further work (see the probe_parameter timestamp rationale

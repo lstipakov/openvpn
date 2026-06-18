@@ -193,6 +193,12 @@ oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param)
 }
 
 bool
+oob_client_reply_write(struct buffer *buf, const struct oob_probe_reply *reply)
+{
+    return oob_msg_write_header(buf, OOB_MSG_PROBE_REPLY) && oob_probe_reply_write(buf, reply);
+}
+
+bool
 oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
 {
     uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);

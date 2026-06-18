@@ -32,6 +32,7 @@
 
 #include "memdbg.h"
 #include "ssl_pkt.h"
+#include "oob.h"
 
 #ifdef HAVE_SYS_INOTIFY_H
 #include <sys/inotify.h>
@@ -82,6 +83,34 @@ send_hmac_reset_packet(struct multi_context *m, struct tls_pre_decrypt_state *st
 
     send_standalone_reply(m, &buf, "Connection Attempt",
                           "Reset packet from client, sending HMAC based reset challenge", sock);
+}
+
+/* Send an out-of-band PROBE_REPLY back to the source of a SERVER_PROBE,
+ * synchronously and without keeping any state, mirroring the reset path. */
+static void
+send_probe_reply(struct multi_context *m, struct tls_pre_decrypt_state *state,
+                 struct tls_auth_standalone *tas, const struct oob_probe_reply *reply,
+                 struct session_id *own_sid, struct link_socket *sock)
+{
+    struct gc_arena gc = gc_new();
+
+    /* Build the payload of the reply (message-type header + probe_reply TLV) */
+    struct buffer payload = alloc_buf_gc(128, &gc);
+    if (!oob_client_reply_write(&payload, reply))
+    {
+        gc_free(&gc);
+        return;
+    }
+
+    /* OOB replies use the same control-channel wrapping as the request */
+    reset_packet_id_send(&state->tls_wrap_tmp.opt.packet_id.send);
+    state->tls_wrap_tmp.opt.packet_id.rec.initialized = true;
+
+    struct buffer buf = tls_wrap_oob_standalone(&state->tls_wrap_tmp, tas, own_sid, &payload);
+    send_standalone_reply(m, &buf, "Server Probe", "Server probe from client, sending probe reply",
+                          sock);
+
+    gc_free(&gc);
 }
 
 
@@ -199,6 +228,39 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
         gc_free(&gc);
 
         return ret;
+    }
+    else if (verdict == VERDICT_VALID_OOB_V1)
+    {
+        /* Out-of-band server probe. state->newbuf points at the TLV payload
+         * (read_control_auth has stripped the opcode, session id and any
+         * tls-auth/tls-crypt wrapping). Answer it without creating a session. */
+        struct oob_probe_reply reply;
+        if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
+                                   &state->peer_session_id, &reply))
+        {
+            /* malformed or replayed/stale probe: silently drop */
+            return false;
+        }
+
+        /* Rate-limit replies, as the reset path does, so an unauthenticated
+         * probe flood (no tls-auth/tls-crypt) cannot use us as a reflector. */
+        if (!reflect_filter_rate_limit_check(m->initial_rate_limiter))
+        {
+            return false;
+        }
+
+        /* Our session id is a stateless SYN cookie (the same HMAC the three-way
+         * handshake uses): we keep no per-probe state, and the reply can later
+         * also serve as the server's CONTROL_HARD_RESET_SERVER_V2, letting a
+         * client skip the first two handshake messages (the connect_lifetime
+         * shortcut). */
+        struct session_id sid =
+            calculate_session_id_hmac(state->peer_session_id, from, hmac, handwindow, 0);
+
+        send_probe_reply(m, state, tas, &reply, &sid, sock);
+
+        /* An OOB probe never creates a session */
+        return false;
     }
 
     /* VERDICT_INVALID */

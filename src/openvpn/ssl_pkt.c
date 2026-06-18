@@ -315,7 +315,8 @@ tls_pre_decrypt_lite(const struct tls_auth_standalone *tas, struct tls_pre_decry
 
     /* Allow only the reset packet or the first packet of the actual handshake. */
     if (op != P_CONTROL_HARD_RESET_CLIENT_V2 && op != P_CONTROL_HARD_RESET_CLIENT_V3
-        && op != P_CONTROL_V1 && op != P_CONTROL_WKC_V1 && op != P_ACK_V1)
+        && op != P_CONTROL_V1 && op != P_CONTROL_WKC_V1 && op != P_ACK_V1
+        && op != P_CONTROL_OOB_V1)
     {
         /*
          * This can occur due to bogus data or DoS packets.
@@ -390,6 +391,10 @@ tls_pre_decrypt_lite(const struct tls_auth_standalone *tas, struct tls_pre_decry
     {
         return VERDICT_VALID_WKC_V1;
     }
+    else if (op == P_CONTROL_OOB_V1)
+    {
+        return VERDICT_VALID_OOB_V1;
+    }
     else
     {
         return VERDICT_VALID_RESET_V2;
@@ -436,6 +441,29 @@ tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
         buf_write_u16(&buf, sizeof(uint16_t));
         buf_write_u16(&buf, EARLY_NEG_FLAG_RESEND_WKC);
     }
+
+    /* Add tls-auth/tls-crypt wrapping, this might replace buf with
+     * ctx->work */
+    tls_wrap_control(ctx, header, &buf, own_sid);
+
+    return buf;
+}
+
+struct buffer
+tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
+                        struct session_id *own_sid, const struct buffer *payload)
+{
+    /* Copy buffer here to point at the same data but allow tls_wrap_control
+     * to potentially change buf to point to another buffer without
+     * modifying the buffer in tas */
+    struct buffer buf = tas->workbuf;
+    ASSERT(buf_init(&buf, tas->frame.buf.headroom));
+
+    /* Out-of-band messages carry the payload directly, with no reliability
+     * or ACK fields. */
+    ASSERT(buf_copy(&buf, payload));
+
+    uint8_t header = (uint8_t)(P_CONTROL_OOB_V1 << P_OPCODE_SHIFT);
 
     /* Add tls-auth/tls-crypt wrapping, this might replace buf with
      * ctx->work */
