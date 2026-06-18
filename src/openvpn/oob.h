@@ -146,4 +146,56 @@ bool oob_probe_reply_write(struct buffer *buf, const struct oob_probe_reply *r);
  */
 bool oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r, uint16_t value_len);
 
+/**
+ * Write a complete SERVER_PROBE message (message-type header + probe_parameter
+ * TLV) to @p buf. Sent by the client.
+ */
+bool oob_server_probe_write(struct buffer *buf, const struct oob_probe_parameter *param);
+
+/**
+ * Read a received OOB SERVER_PROBE: verify its message-type header, then scan
+ * for the probe_parameter TLV. TLV types other than probe_parameter are
+ * skipped, so the scan tolerates additional/future TLVs. @p payload is consumed
+ * as it is read.
+ *
+ * @param payload  buffer positioned at the start of the OOB message payload
+ * @param param    filled with the parsed probe_parameter on success
+ * @return true if the header matched and a well-formed probe_parameter was
+ *         found, false otherwise
+ */
+bool oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param);
+
+/**
+ * Check whether a probe timestamp is within an acceptable window around the
+ * current time. Used to cheaply drop replayed or implausibly-timed probes
+ * before doing any further work (see the probe_parameter timestamp rationale
+ * in the wire protocol specification).
+ *
+ * @param probe_ts     timestamp from the probe_parameter (UNIX seconds)
+ * @param now          current time (UNIX seconds)
+ * @param window_secs  maximum allowed difference, in either direction
+ * @return true if |now - probe_ts| <= window_secs
+ */
+bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs);
+
+/**
+ * Process the TLV payload of a received SERVER_PROBE and decide whether to
+ * answer it. Combines oob_server_probe_read() and oob_timestamp_in_window():
+ * the probe is dropped (false returned) if it has no valid probe_parameter or
+ * its timestamp is outside the acceptable window. On success @p reply is
+ * populated with the peer's session id echoed back and the remaining fields
+ * zeroed, ready to be wrapped and sent.
+ *
+ * This is the transport-agnostic decision step; the caller performs the send.
+ *
+ * @param probe_payload  TLV payload of the received OOB SERVER_PROBE
+ * @param now            current time (UNIX seconds)
+ * @param window_secs    acceptable timestamp skew, in either direction
+ * @param peer_sid       session id of the requesting peer (echoed in the reply)
+ * @param reply          filled with the reply to send on success
+ * @return true if a reply should be sent, false to silently drop the probe
+ */
+bool oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
+                           const struct session_id *peer_sid, struct oob_probe_reply *reply);
+
 #endif /* OOB_H */

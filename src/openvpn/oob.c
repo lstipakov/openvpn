@@ -152,3 +152,71 @@ oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r, uint16_t val
     r->max_latency_diff = (uint16_t)max_latency_diff;
     return oob_skip_trailing(buf, value_len, OOB_PROBE_REPLY_LEN);
 }
+
+bool
+oob_server_probe_write(struct buffer *buf, const struct oob_probe_parameter *param)
+{
+    return oob_msg_write_header(buf, OOB_MSG_SERVER_PROBE)
+           && oob_probe_parameter_write(buf, param);
+}
+
+bool
+oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param)
+{
+    if (!oob_msg_read_header(payload, OOB_MSG_SERVER_PROBE))
+    {
+        return false;
+    }
+
+    /* A TLV header is 4 bytes (type + length). Loop until we either find the
+     * probe_parameter or run out of well-formed TLVs. */
+    while (BLEN(payload) >= 4)
+    {
+        uint16_t type;
+        bool optional;
+        uint16_t value_len;
+        if (!oob_tlv_read_header(payload, &type, &optional, &value_len))
+        {
+            return false;
+        }
+        if (type == OOB_TLV_PROBE_PARAMETER)
+        {
+            return oob_probe_parameter_read(payload, param, value_len);
+        }
+        /* not the TLV we are looking for: skip its value and keep scanning */
+        if (!buf_advance(payload, value_len))
+        {
+            return false;
+        }
+    }
+    return false;
+}
+
+bool
+oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
+{
+    uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);
+    return diff <= window_secs;
+}
+
+bool
+oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
+                      const struct session_id *peer_sid, struct oob_probe_reply *reply)
+{
+    struct oob_probe_parameter param;
+    if (!oob_server_probe_read(probe_payload, &param))
+    {
+        return false;
+    }
+
+    /* Drop replayed or implausibly-timed probes before doing any more work. */
+    if (!oob_timestamp_in_window(param.timestamp, now, window_secs))
+    {
+        return false;
+    }
+
+    memset(reply, 0, sizeof(*reply));
+    reply->peer_session_id = *peer_sid;
+    /* priority/weight/connect_lifetime/flags left at 0 for now */
+    return true;
+}
