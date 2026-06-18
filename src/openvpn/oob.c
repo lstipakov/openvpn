@@ -160,31 +160,28 @@ oob_server_probe_write(struct buffer *buf, const struct oob_probe_parameter *par
            && oob_probe_parameter_write(buf, param);
 }
 
-bool
-oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param)
+/* Scan @p payload for the first TLV of type @p wanted_type, skipping any other
+ * (e.g. future) TLV types. On success @p payload is left positioned at that
+ * TLV's value and *value_len is its declared length. Returns false if the TLV
+ * is not found or a header/length is malformed. */
+static bool
+oob_find_tlv(struct buffer *payload, uint16_t wanted_type, uint16_t *value_len)
 {
-    if (!oob_msg_read_header(payload, OOB_MSG_SERVER_PROBE))
-    {
-        return false;
-    }
-
-    /* A TLV header is 4 bytes (type + length). Loop until we either find the
-     * probe_parameter or run out of well-formed TLVs. */
+    /* A TLV header is 4 bytes (type + length). */
     while (BLEN(payload) >= 4)
     {
         uint16_t type;
         bool optional;
-        uint16_t value_len;
-        if (!oob_tlv_read_header(payload, &type, &optional, &value_len))
+        if (!oob_tlv_read_header(payload, &type, &optional, value_len))
         {
             return false;
         }
-        if (type == OOB_TLV_PROBE_PARAMETER)
+        if (type == wanted_type)
         {
-            return oob_probe_parameter_read(payload, param, value_len);
+            return true;
         }
-        /* not the TLV we are looking for: skip its value and keep scanning */
-        if (!buf_advance(payload, value_len))
+        /* not the TLV we want: skip its value and keep scanning */
+        if (!buf_advance(payload, *value_len))
         {
             return false;
         }
@@ -193,9 +190,27 @@ oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param)
 }
 
 bool
+oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param)
+{
+    uint16_t value_len;
+    return oob_msg_read_header(payload, OOB_MSG_SERVER_PROBE)
+           && oob_find_tlv(payload, OOB_TLV_PROBE_PARAMETER, &value_len)
+           && oob_probe_parameter_read(payload, param, value_len);
+}
+
+bool
 oob_client_reply_write(struct buffer *buf, const struct oob_probe_reply *reply)
 {
     return oob_msg_write_header(buf, OOB_MSG_PROBE_REPLY) && oob_probe_reply_write(buf, reply);
+}
+
+bool
+oob_client_reply_read(struct buffer *payload, struct oob_probe_reply *reply)
+{
+    uint16_t value_len;
+    return oob_msg_read_header(payload, OOB_MSG_PROBE_REPLY)
+           && oob_find_tlv(payload, OOB_TLV_PROBE_REPLY, &value_len)
+           && oob_probe_reply_read(payload, reply, value_len);
 }
 
 bool
