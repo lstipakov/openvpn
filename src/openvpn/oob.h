@@ -111,6 +111,16 @@ bool oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r);
 bool oob_probe_request_find(struct buffer *payload, struct oob_probe_request *req);
 
 /**
+ * Scan the payload of a received OOB message for the probe reply TLV; the
+ * client-side counterpart of oob_probe_request_find().
+ *
+ * @param payload  buffer positioned at the start of the OOB message payload
+ * @param reply    filled with the parsed probe reply on success
+ * @return true if a well-formed probe reply was found, false otherwise
+ */
+bool oob_probe_reply_find(struct buffer *payload, struct oob_probe_reply *reply);
+
+/**
  * Check whether a probe timestamp is within an acceptable window around the
  * current time. Used to cheaply drop replayed or implausibly-timed probes
  * before doing any further work (see the probe request timestamp rationale

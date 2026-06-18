@@ -93,6 +93,14 @@ oob_probe_request_find(struct buffer *payload, struct oob_probe_request *req)
 }
 
 bool
+oob_probe_reply_find(struct buffer *payload, struct oob_probe_reply *reply)
+{
+    struct buffer value;
+    return ctrl_msg_find_tlv(payload, TLV_TYPE_PROBE_REPLY, &value)
+           && oob_probe_reply_read(&value, reply);
+}
+
+bool
 oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
 {
     uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);

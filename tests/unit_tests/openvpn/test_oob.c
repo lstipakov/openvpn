@@ -553,6 +553,106 @@ test_probe_request_check_no_request(void **state)
     gc_free(&gc);
 }
 
+/* A payload of just a probe reply is found by the client scan, with all
+ * fields surviving. */
+static void
+test_probe_reply_find(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    struct oob_probe_reply in = {
+        .request_id = 7,
+        .priority = 5,
+        .weight = 50,
+        .max_latency_diff = 25,
+        .connect_lifetime = 120,
+        .flags = 1,
+    };
+    assert_true(oob_probe_reply_write(&buf, &in));
+
+    struct oob_probe_reply out = { 0 };
+    assert_true(oob_probe_reply_find(&buf, &out));
+    assert_int_equal(out.request_id, in.request_id);
+    assert_int_equal(out.priority, in.priority);
+    assert_int_equal(out.weight, in.weight);
+    assert_int_equal(out.max_latency_diff, in.max_latency_diff);
+    assert_int_equal(out.connect_lifetime, in.connect_lifetime);
+    assert_int_equal(out.flags, in.flags);
+
+    gc_free(&gc);
+}
+
+/* TLVs other than the probe reply are skipped. */
+static void
+test_probe_reply_find_skips_unknown(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0xabad1dea));
+    struct oob_probe_reply in = { .priority = 7 };
+    assert_true(oob_probe_reply_write(&buf, &in));
+
+    struct oob_probe_reply out = { 0 };
+    assert_true(oob_probe_reply_find(&buf, &out));
+    assert_int_equal(out.priority, 7);
+
+    gc_free(&gc);
+}
+
+/* As on the probe side, a mandatory TLV we do not understand -- here trailing
+ * the probe reply -- invalidates the reply. */
+static void
+test_probe_reply_find_rejects_unknown_mandatory(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    struct oob_probe_reply in = { .priority = 7 };
+    assert_true(oob_probe_reply_write(&buf, &in));
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, false, 4));
+    assert_true(buf_write_u32(&buf, 0xabad1dea));
+
+    struct oob_probe_reply out = { 0 };
+    assert_false(oob_probe_reply_find(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* A payload with no probe reply is rejected. */
+static void
+test_probe_reply_find_missing(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    assert_true(ctrl_msg_tlv_write_header(&buf, 0x7ff, true, 4));
+    assert_true(buf_write_u32(&buf, 0));
+
+    struct oob_probe_reply out = { 0 };
+    assert_false(oob_probe_reply_find(&buf, &out));
+
+    gc_free(&gc);
+}
+
+/* Likewise, a payload carrying a probe request instead holds no probe reply. */
+static void
+test_probe_reply_find_request_tlv(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    const struct oob_probe_request in = { .request_id = 7 };
+    assert_true(oob_probe_request_write(&buf, &in));
+
+    struct oob_probe_reply out = { 0 };
+    assert_false(oob_probe_reply_find(&buf, &out));
+
+    gc_free(&gc);
+}
+
 /* The OOB tests run as a second group of pkt_testdriver; see test_pkt.c. */
 int
 run_oob_tests(void)
@@ -579,6 +679,11 @@ run_oob_tests(void)
         cmocka_unit_test(test_probe_request_check_valid),
         cmocka_unit_test(test_probe_request_check_stale),
         cmocka_unit_test(test_probe_request_check_no_request),
+        cmocka_unit_test(test_probe_reply_find),
+        cmocka_unit_test(test_probe_reply_find_skips_unknown),
+        cmocka_unit_test(test_probe_reply_find_rejects_unknown_mandatory),
+        cmocka_unit_test(test_probe_reply_find_missing),
+        cmocka_unit_test(test_probe_reply_find_request_tlv),
     };
 
     return cmocka_run_group_tests_name("oob tests", tests, NULL, NULL);
