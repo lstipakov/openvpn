@@ -326,6 +326,12 @@ multi_init(struct context *t)
     m->new_connection_limiter = frequency_limit_init(t->options.cf_max, t->options.cf_per);
     m->initial_rate_limiter =
         initial_rate_limit_init(t->options.cf_initial_max, t->options.cf_initial_per);
+    /* stale server probes: a twentieth of the initial-packet rate, at least 1
+     * per period (5 per 10 s by default, the wire protocol's own example).
+     * Quiet, as a replayed probe hitting the limit is not worth a warning. */
+    m->stale_probe_limiter =
+        initial_rate_limit_init(max_int(1, t->options.cf_initial_max / 20), t->options.cf_initial_per);
+    m->stale_probe_limiter->quiet = true;
 
     /*
      * Allocate broadcast/multicast buffer list
@@ -689,6 +695,7 @@ multi_uninit(struct multi_context *m)
         ifconfig_pool_free(m->ifconfig_pool);
         frequency_limit_free(m->new_connection_limiter);
         initial_rate_limit_free(m->initial_rate_limiter);
+        initial_rate_limit_free(m->stale_probe_limiter);
         multi_reap_free(m->reaper);
         mroute_helper_free(m->route_helper);
         multi_io_free(m->multi_io);
