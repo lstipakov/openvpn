@@ -139,6 +139,21 @@ bool oob_client_reply_write(struct buffer *buf, uint32_t message_id, uint32_t re
                             const struct oob_probe_reply *reply);
 
 /**
+ * Read a received OOB PROBE_REPLY: verify its message header, then scan for
+ * the probe_reply TLV; the client-side counterpart of oob_server_probe_read().
+ * Unknown TLV types marked optional are skipped; an unknown mandatory one
+ * rejects the reply. payload is consumed as it is read.
+ *
+ * @param payload      buffer positioned at the start of the OOB message payload
+ * @param response_id  set to the message_id of the probe answered, on success
+ * @param reply        filled with the parsed probe_reply on success
+ * @return true if the header matched and a well-formed probe_reply was found,
+ *         false otherwise
+ */
+bool oob_client_reply_read(struct buffer *payload, uint32_t *response_id,
+                           struct oob_probe_reply *reply);
+
+/**
  * Check whether a probe timestamp is within an acceptable window around the
  * current time. Used to cheaply drop replayed or implausibly-timed probes
  * before doing any further work (see the probe_parameter timestamp rationale
