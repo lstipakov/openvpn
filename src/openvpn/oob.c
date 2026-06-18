@@ -81,3 +81,55 @@ oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r)
     r->flags = buf_read_u32(buf, NULL);
     return true;
 }
+
+bool
+oob_server_probe_write(struct buffer *buf, uint32_t message_id,
+                       const struct oob_probe_parameter *param)
+{
+    const struct ctrl_msg_header hdr = {
+        .type = OOB_MSG_SERVER_PROBE,
+        .message_id = message_id,
+        .response_id = 0,
+    };
+    return ctrl_msg_write_header(buf, &hdr) && oob_probe_parameter_write(buf, param);
+}
+
+bool
+oob_server_probe_read(struct buffer *payload, uint32_t *message_id,
+                      struct oob_probe_parameter *param)
+{
+    struct ctrl_msg_header hdr;
+    if (!ctrl_msg_read_header(payload, OOB_MSG_SERVER_PROBE, &hdr))
+    {
+        return false;
+    }
+    *message_id = hdr.message_id;
+
+    struct buffer value;
+    if (!ctrl_msg_find_tlv(payload, OOB_TLV_PROBE_PARAMETER, &value))
+    {
+        return false;
+    }
+
+    return oob_probe_parameter_read(&value, param);
+}
+
+bool
+oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
+{
+    uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);
+    return diff <= window_secs;
+}
+
+enum oob_probe_verdict
+oob_server_probe_check(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
+                       uint32_t *message_id)
+{
+    struct oob_probe_parameter param;
+    if (!oob_server_probe_read(probe_payload, message_id, &param))
+    {
+        return OOB_PROBE_INVALID;
+    }
+    return oob_timestamp_in_window(param.timestamp, now, window_secs) ? OOB_PROBE_OK
+                                                                      : OOB_PROBE_STALE;
+}

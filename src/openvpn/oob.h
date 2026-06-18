@@ -108,4 +108,60 @@ bool oob_probe_reply_write(struct buffer *buf, const struct oob_probe_reply *r);
  */
 bool oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r);
 
+/**
+ * Write a complete SERVER_PROBE message (message header + probe_parameter TLV)
+ * to buf. Sent by the client; message_id must be nonzero and new for every
+ * transmission, so a reply identifies the one it answers.
+ */
+bool oob_server_probe_write(struct buffer *buf, uint32_t message_id,
+                            const struct oob_probe_parameter *param);
+
+/**
+ * Read a received OOB SERVER_PROBE: verify its message header, then scan for
+ * the probe_parameter TLV. Unknown TLV types marked optional are skipped; an
+ * unknown mandatory one rejects the probe. payload is consumed as it is read.
+ *
+ * @param payload     buffer positioned at the start of the OOB message payload
+ * @param message_id  set to the probe's message_id on success
+ * @param param       filled with the parsed probe_parameter on success
+ * @return true if the header matched and a well-formed probe_parameter was
+ *         found, false otherwise
+ */
+bool oob_server_probe_read(struct buffer *payload, uint32_t *message_id,
+                           struct oob_probe_parameter *param);
+
+/**
+ * Check whether a probe timestamp is within an acceptable window around the
+ * current time. Used to cheaply drop replayed or implausibly-timed probes
+ * before doing any further work (see the probe_parameter timestamp rationale
+ * in the wire protocol specification).
+ *
+ * @param probe_ts     timestamp from the probe_parameter (UNIX seconds)
+ * @param now          current time (UNIX seconds)
+ * @param window_secs  maximum allowed difference, in either direction
+ * @return true if |now - probe_ts| <= window_secs
+ */
+bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs);
+
+enum oob_probe_verdict
+{
+    OOB_PROBE_INVALID, /**< no valid probe_parameter: drop */
+    OOB_PROBE_STALE,   /**< well-formed, timestamp outside the window */
+    OOB_PROBE_OK,      /**< well-formed, timestamp within the window */
+};
+
+/**
+ * Classify a received SERVER_PROBE. Combines oob_server_probe_read() and
+ * oob_timestamp_in_window(). This is the transport-agnostic decision step;
+ * the caller decides what to do with a stale probe and builds the reply.
+ *
+ * @param probe_payload  payload of the received OOB SERVER_PROBE, consumed
+ * @param now            current time (UNIX seconds)
+ * @param window_secs    acceptable timestamp skew, in either direction
+ * @param message_id     set to the probe's message_id unless the verdict is
+ *                       OOB_PROBE_INVALID, for the reply to echo
+ */
+enum oob_probe_verdict oob_server_probe_check(struct buffer *probe_payload, uint64_t now,
+                                              uint64_t window_secs, uint32_t *message_id);
+
 #endif /* OOB_H */
