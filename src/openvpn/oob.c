@@ -147,3 +147,160 @@ oob_server_probe_accept(struct buffer *probe_payload, uint64_t now, uint64_t win
     /* Drop replayed or implausibly-timed probes before doing any more work. */
     return oob_timestamp_in_window(param.timestamp, now, window_secs);
 }
+
+/* Base ordering: responders before non-responders, then by priority (lower
+ * first), then by RTT (lower first), then by original index for determinism.
+ * This groups responders into priority runs pre-sorted by RTT, which the
+ * candidate-band step below relies on (run[0] is the fastest in its group). */
+static int
+oob_probe_result_compare(const void *a, const void *b)
+{
+    const struct oob_probe_result *ra = a;
+    const struct oob_probe_result *rb = b;
+
+    if (ra->responded && rb->responded)
+    {
+        /* both answered: lowest priority first, then lowest RTT */
+        if (ra->reply.priority != rb->reply.priority)
+        {
+            return ra->reply.priority < rb->reply.priority ? -1 : 1;
+        }
+        if (ra->rtt_ms != rb->rtt_ms)
+        {
+            return ra->rtt_ms < rb->rtt_ms ? -1 : 1;
+        }
+    }
+    else if (ra->responded)
+    {
+        return -1; /* only a answered: it ranks first */
+    }
+    else if (rb->responded)
+    {
+        return 1; /* only b answered */
+    }
+
+    /* neither answered, or all keys equal: keep the configured order */
+    return ra->index - rb->index;
+}
+
+int
+oob_effective_margin(const struct oob_probe_result *r, int client_margin)
+{
+    if (client_margin >= 0)
+    {
+        return client_margin;              /* the client's own setting is authoritative */
+    }
+    return (int)r->reply.max_latency_diff; /* else the server's advertised value */
+}
+
+/* Reorder the index list idx[0..m) into DNS-SRV (RFC 2782) weighted-random
+ * order by results[idx[k]].reply.weight: each position is filled by a remaining entry
+ * chosen with probability proportional to its weight. When all remaining
+ * weights are 0 the current (RTT-sorted) order is kept. */
+static void
+oob_weighted_order(const struct oob_probe_result *results, int *idx, int m, int64_t (*rng)(void))
+{
+    for (int pos = 0; pos < m; pos++)
+    {
+        long sum = 0;
+        for (int k = pos; k < m; k++)
+        {
+            sum += results[idx[k]].reply.weight;
+        }
+        int chosen = pos;
+        if (sum > 0)
+        {
+            int64_t r = rng() % sum; /* uniform in [0, sum) */
+            long acc = 0;
+            for (int k = pos; k < m; k++)
+            {
+                acc += results[idx[k]].reply.weight;
+                if (acc > r)
+                {
+                    chosen = k;
+                    break;
+                }
+            }
+        }
+        int t = idx[pos];
+        idx[pos] = idx[chosen];
+        idx[chosen] = t;
+    }
+}
+
+/* Reorder one priority run (run[0..m), already RTT-sorted) in place:
+ * candidates (RTT within the band of the fastest) first, ordered by weighted
+ * random; then non-candidates in RTT order. */
+static void
+oob_order_priority_run(struct oob_probe_result *run, int m, int client_margin, int64_t (*rng)(void),
+                       struct gc_arena *gc)
+{
+    if (m <= 1)
+    {
+        return;
+    }
+
+    unsigned int best_rtt = run[0].rtt_ms; /* run is RTT-sorted: [0] is fastest */
+
+    int *cand = gc_malloc(sizeof(int) * m, false, gc);
+    int *non = gc_malloc(sizeof(int) * m, false, gc);
+    int nc = 0;
+    int nn = 0;
+    for (int k = 0; k < m; k++)
+    {
+        /* "no more than their max_latency_diff larger than the lowest RTT", so the
+         * comparison includes the margin itself. That also keeps the fastest of
+         * the run a candidate when it advertises 0: announcing 0 asks not to be
+         * compared on weight, not to be ranked behind a slower server. */
+        unsigned int gap = run[k].rtt_ms - best_rtt;
+        if (gap <= (unsigned int)oob_effective_margin(&run[k], client_margin))
+        {
+            cand[nc++] = k;
+        }
+        else
+        {
+            non[nn++] = k;
+        }
+    }
+
+    oob_weighted_order(run, cand, nc, rng);
+
+    struct oob_probe_result *tmp = gc_malloc(sizeof(*tmp) * m, false, gc);
+    int t = 0;
+    for (int k = 0; k < nc; k++)
+    {
+        tmp[t++] = run[cand[k]];
+    }
+    for (int k = 0; k < nn; k++)
+    {
+        tmp[t++] = run[non[k]];
+    }
+    memcpy(run, tmp, sizeof(*run) * m);
+}
+
+void
+oob_rank_probe_results(struct oob_probe_result *results, int n, int client_margin,
+                       int64_t (*rng)(void), struct gc_arena *gc)
+{
+    if (n <= 1)
+    {
+        return;
+    }
+
+    /* Base order: responders first, grouped by priority, RTT-sorted within. */
+    qsort(results, (size_t)n, sizeof(*results), oob_probe_result_compare);
+
+    /* Reorder each priority run of responders by candidate-band + weight. */
+    int i = 0;
+    while (i < n && results[i].responded)
+    {
+        int j = i;
+        while (j < n && results[j].responded
+               && results[j].reply.priority == results[i].reply.priority)
+        {
+            j++;
+        }
+        oob_order_priority_run(results + i, j - i, client_margin, rng, gc);
+        i = j;
+    }
+}
