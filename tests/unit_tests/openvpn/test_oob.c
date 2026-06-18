@@ -429,6 +429,144 @@ test_client_reply_read_wrong_msg_type(void **state)
     gc_free(&gc);
 }
 
+/* Deterministic RNG stubs for the weighted-selection ordering. rank_rng_zero
+ * makes the weighted draw always pick the first remaining candidate, preserving
+ * order; rank_rng_fixed returns a value we set to land in a chosen weight slice. */
+static int64_t
+rank_rng_zero(void)
+{
+    return 0;
+}
+
+static int64_t rank_rng_value;
+static int64_t
+rank_rng_fixed(void)
+{
+    return rank_rng_value;
+}
+
+/* Responders rank ahead of non-responders regardless of index order. */
+static void
+test_rank_responder_before_nonresponder(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct oob_probe_result r[] = {
+        { .index = 0, .responded = false },
+        { .index = 1, .responded = true, .priority = 100, .weight = 50 },
+    };
+    oob_rank_probe_results(r, 2, 10, rank_rng_zero, &gc);
+    assert_int_equal(r[0].index, 1);
+    assert_int_equal(r[1].index, 0);
+    gc_free(&gc);
+}
+
+/* Among responders, the lowest priority value wins (an absolute ordering). */
+static void
+test_rank_by_priority(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct oob_probe_result r[] = {
+        { .index = 0, .responded = true, .priority = 20, .weight = 50 },
+        { .index = 1, .responded = true, .priority = 5, .weight = 50 },
+        { .index = 2, .responded = true, .priority = 10, .weight = 50 },
+    };
+    oob_rank_probe_results(r, 3, 10, rank_rng_zero, &gc);
+    assert_int_equal(r[0].index, 1); /* priority 5 */
+    assert_int_equal(r[1].index, 2); /* priority 10 */
+    assert_int_equal(r[2].index, 0); /* priority 20 */
+    gc_free(&gc);
+}
+
+/* Within a priority, only servers within the latency margin of the fastest are
+ * candidates; a slower (out-of-band) server ranks behind a faster one no matter
+ * how large its weight. */
+static void
+test_rank_candidate_band(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct oob_probe_result r[] = {
+        { .index = 0, .responded = true, .priority = 10, .weight = 1000, .rtt_ms = 100 },
+        { .index = 1, .responded = true, .priority = 10, .weight = 1, .rtt_ms = 20 },
+    };
+    /* margin 10ms: 20ms is fastest; 100ms is 80ms slower -> out of band */
+    oob_rank_probe_results(r, 2, 10, rank_rng_zero, &gc);
+    assert_int_equal(r[0].index, 1); /* fast, in-band, despite tiny weight */
+    assert_int_equal(r[1].index, 0); /* slow, out-of-band, despite huge weight */
+    gc_free(&gc);
+}
+
+/* A server widens its own band via the advertised max_latency_diff, joining the
+ * candidate set even when it is well behind the fastest; it then participates in
+ * the weighted selection. */
+static void
+test_rank_advertised_margin(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct oob_probe_result r[] = {
+        { .index = 0, .responded = true, .priority = 10, .weight = 1, .rtt_ms = 20 },
+        { .index = 1,
+          .responded = true,
+          .priority = 10,
+          .weight = 1000,
+          .rtt_ms = 100,
+          .max_latency_diff = 200 },
+    };
+    /* Client did not set a margin (-1), so each server's advertised value
+     * applies: the 100ms server advertises 200 -> it is a candidate (the
+     * default 10 would have excluded it); with weight 1000 (slice [1,1001)) a
+     * draw of 500 selects it first. */
+    rank_rng_value = 500;
+    oob_rank_probe_results(r, 2, -1, rank_rng_fixed, &gc);
+    assert_int_equal(r[0].index, 1);
+    gc_free(&gc);
+}
+
+/* Among candidates, weight drives RFC-2782 proportional selection: a draw is
+ * mapped to the server whose cumulative weight slice it falls in. */
+static void
+test_rank_weighted_selection(void **state)
+{
+    struct gc_arena gc = gc_new();
+    /* equal priority and RTT -> both in band; weights 30 and 70, sum 100:
+     * index 0 owns [0,30), index 1 owns [30,100). */
+    const struct oob_probe_result base[] = {
+        { .index = 0, .responded = true, .priority = 10, .weight = 30, .rtt_ms = 20 },
+        { .index = 1, .responded = true, .priority = 10, .weight = 70, .rtt_ms = 20 },
+    };
+    struct oob_probe_result r[2];
+
+    memcpy(r, base, sizeof(base));
+    rank_rng_value = 10; /* falls in index 0's slice */
+    oob_rank_probe_results(r, 2, 50, rank_rng_fixed, &gc);
+    assert_int_equal(r[0].index, 0);
+
+    memcpy(r, base, sizeof(base));
+    rank_rng_value = 50; /* falls in index 1's slice */
+    oob_rank_probe_results(r, 2, 50, rank_rng_fixed, &gc);
+    assert_int_equal(r[0].index, 1);
+
+    gc_free(&gc);
+}
+
+/* Non-responders are placed last, keeping their original relative order. */
+static void
+test_rank_nonresponders_last(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct oob_probe_result r[] = {
+        { .index = 0, .responded = false },
+        { .index = 1, .responded = true, .priority = 10, .weight = 50, .rtt_ms = 20 },
+        { .index = 2, .responded = false },
+        { .index = 3, .responded = true, .priority = 10, .weight = 50, .rtt_ms = 20 },
+    };
+    oob_rank_probe_results(r, 4, 10, rank_rng_zero, &gc);
+    assert_int_equal(r[0].index, 1); /* responder (rng_zero keeps order) */
+    assert_int_equal(r[1].index, 3); /* responder */
+    assert_int_equal(r[2].index, 0); /* non-responder, original order kept */
+    assert_int_equal(r[3].index, 2);
+    gc_free(&gc);
+}
+
 int
 main(void)
 {
@@ -452,6 +590,12 @@ main(void)
         cmocka_unit_test(test_client_reply_read_skips_unknown),
         cmocka_unit_test(test_client_reply_read_missing),
         cmocka_unit_test(test_client_reply_read_wrong_msg_type),
+        cmocka_unit_test(test_rank_responder_before_nonresponder),
+        cmocka_unit_test(test_rank_by_priority),
+        cmocka_unit_test(test_rank_candidate_band),
+        cmocka_unit_test(test_rank_advertised_margin),
+        cmocka_unit_test(test_rank_weighted_selection),
+        cmocka_unit_test(test_rank_nonresponders_last),
     };
 
     return cmocka_run_group_tests_name("oob tests", tests, NULL, NULL);

@@ -217,4 +217,55 @@ bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_se
 bool oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
                            const struct session_id *peer_sid, struct oob_probe_reply *reply);
 
+/* Candidate-band margin (ms) used when neither the client nor the server
+ * specifies one. */
+#define OOB_DEFAULT_LATENCY_MARGIN_MS 10
+
+/* Outcome of probing one remote, used to order remotes best-first. @index is
+ * the caller's identifier for the remote (e.g. its position in the connection
+ * list); priority/weight are only meaningful when @responded is true. */
+struct oob_probe_result
+{
+    int index;
+    bool responded;
+    uint16_t priority;
+    uint16_t weight;
+    uint16_t max_latency_diff; /* margin advertised by this server (ms); 0 = use client default */
+    unsigned int rtt_ms;       /* probe round-trip time in ms (responders only) */
+};
+
+/**
+ * Order @p results best-first, in place, per the server-probe selection policy:
+ *   - remotes that responded rank before those that did not (non-responders keep
+ *     their original relative order, last);
+ *   - responders are grouped by priority, lowest priority value first (an
+ *     absolute ordering, never overridden by latency or weight);
+ *   - within a priority group, the "candidates" are the responders whose RTT is
+ *     within a margin of the fastest in the group (see oob_effective_margin()).
+ *     Candidates are ordered ahead of non-candidates;
+ *   - candidates are ordered by DNS-SRV (RFC 2782) weighted-random selection by
+ *     weight, so a server is chosen first with probability proportional to its
+ *     weight (load distribution). Non-candidates follow, ordered by RTT.
+ *
+ * @param results        results to reorder in place
+ * @param n              number of results
+ * @param client_margin  client's candidate-band margin in ms, or < 0 if the
+ *                        client did not set one (see oob_effective_margin())
+ * @param rng            returns a non-negative random value (e.g. get_random);
+ *                       injected so this module stays free of the crypto layer
+ *                       and the weighted ordering is deterministically testable
+ * @param gc             arena for scratch allocation
+ */
+void oob_rank_probe_results(struct oob_probe_result *results, int n, int client_margin,
+                            int64_t (*rng)(void), struct gc_arena *gc);
+
+/**
+ * The candidate-band margin (ms) that applies to one probed remote. The client's
+ * own setting is authoritative: when @p client_margin >= 0 (the client set
+ * --server-probe with a value) it is used for every remote. Otherwise the
+ * server's advertised @c max_latency_diff is used when non-zero, falling back to
+ * OOB_DEFAULT_LATENCY_MARGIN_MS.
+ */
+int oob_effective_margin(const struct oob_probe_result *r, int client_margin);
+
 #endif /* OOB_H */
