@@ -81,3 +81,54 @@ oob_probe_reply_read(struct buffer *buf, struct oob_probe_reply *r)
     r->flags = buf_read_u32(buf, NULL);
     return true;
 }
+
+bool
+oob_server_probe_write(struct buffer *buf, const struct oob_probe_parameter *param)
+{
+    return buf_write_u16(buf, OOB_MSG_SERVER_PROBE) && oob_probe_parameter_write(buf, param);
+}
+
+bool
+oob_server_probe_read(struct buffer *payload, struct oob_probe_parameter *param)
+{
+    if (!ctrl_msg_read_header(payload, OOB_MSG_SERVER_PROBE))
+    {
+        return false;
+    }
+
+    struct buffer value;
+    if (!ctrl_msg_find_tlv(payload, OOB_TLV_PROBE_PARAMETER, &value))
+    {
+        return false;
+    }
+
+    return oob_probe_parameter_read(&value, param);
+}
+
+bool
+oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
+{
+    uint64_t diff = (now > probe_ts) ? (now - probe_ts) : (probe_ts - now);
+    return diff <= window_secs;
+}
+
+bool
+oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
+                      const struct session_id *peer_sid, struct oob_probe_reply *reply)
+{
+    struct oob_probe_parameter param;
+    if (!oob_server_probe_read(probe_payload, &param))
+    {
+        return false;
+    }
+
+    /* Drop replayed or implausibly-timed probes before doing any more work. */
+    if (!oob_timestamp_in_window(param.timestamp, now, window_secs))
+    {
+        return false;
+    }
+
+    /* the caller's advertised values are kept; only the echo is ours to fill */
+    reply->peer_session_id = *peer_sid;
+    return true;
+}
