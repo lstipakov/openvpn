@@ -56,6 +56,7 @@ struct probe_target
     struct sockaddr_storage dest;
     socklen_t destlen;
     bool sent;
+    struct timeval sent_at; /* when the probe was sent, for RTT measurement */
 };
 
 /* Build a plaintext SERVER_PROBE packet:
@@ -173,10 +174,16 @@ oob_probe_handle_reply(const uint8_t *data, int len, const struct session_id *cl
             && addr_port_match((const struct openvpn_sockaddr *)(const void *)from,
                                (const struct openvpn_sockaddr *)(const void *)&targets[i].dest))
         {
+            struct timeval rcv;
+            openvpn_gettimeofday(&rcv, NULL);
+            long ms = (long)(rcv.tv_sec - targets[i].sent_at.tv_sec) * 1000
+                      + (rcv.tv_usec - targets[i].sent_at.tv_usec) / 1000;
+
             results[i].responded = true;
             results[i].priority = reply.priority;
             results[i].weight = reply.weight;
             results[i].max_latency_diff = reply.max_latency_diff;
+            results[i].rtt_ms = (ms > 0) ? (unsigned int)ms : 0;
             break;
         }
     }
@@ -403,6 +410,7 @@ client_probe_and_order_remotes(struct context *c)
         }
         else
         {
+            openvpn_gettimeofday(&targets[i].sent_at, NULL);
             targets[i].destlen = destlen;
             targets[i].sent = true;
             sent_count++;
@@ -424,8 +432,19 @@ client_probe_and_order_remotes(struct context *c)
         if (results[i].responded)
         {
             responded++;
-            msg(D_LOW, "server-probe: %s:%s answered (priority %d, weight %d)", ce->remote,
-                ce->remote_port, results[i].priority, results[i].weight);
+            /* Effective candidate-band margin and where it came from: the
+             * client's own setting wins, else the server's advertised value,
+             * else the built-in default. */
+            int client_margin = c->options.server_probe_latency_margin;
+            int margin = oob_effective_margin(&results[i], client_margin);
+            const char *margin_src = client_margin >= 0                ? "client"
+                                     : results[i].max_latency_diff > 0 ? "server-advertised"
+                                                                       : "default";
+            msg(D_LOW,
+                "server-probe: %s:%s answered (priority %d, weight %d, rtt %u ms;"
+                " latency margin %d ms [%s])",
+                ce->remote, ce->remote_port, results[i].priority, results[i].weight,
+                results[i].rtt_ms, margin, margin_src);
         }
         else
         {
