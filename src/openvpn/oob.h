@@ -180,7 +180,23 @@ struct oob_probe_target
 struct oob_probe_send
 {
     struct openvpn_sockaddr dest;
+    struct timeval sent_at;
 };
+
+/**
+ * Round-trip time of a reply, measured from the transmission it answers.
+ *
+ * @param sends    every transmission so far
+ * @param n_sends  number of transmissions
+ * @param index    the transmission the reply names: its request_id minus the
+ *                 run's base
+ * @param from     source address of the reply
+ * @param rcv      when the reply arrived
+ * @return milliseconds (0 if the clock went backwards), or -1 if index names
+ *         no transmission to from
+ */
+int oob_probe_rtt_ms(const struct oob_probe_send *sends, int n_sends, uint32_t index,
+                     const struct openvpn_sockaddr *from, const struct timeval *rcv);
 
 /**
  * Find the next entry, from index \p start on, that was probed at \p from and

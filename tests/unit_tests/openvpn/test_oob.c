@@ -612,6 +612,38 @@ test_probe_reply_matches_only_its_address(void **state)
     assert_int_equal(oob_probe_next_target_at(&a_other_port, targets, results, 3, 0), -1);
 }
 
+/* The RTT of a reply is measured from the transmission its request_id names (as
+ * an index into the transmissions), which must have gone to the address the
+ * reply came from. */
+static void
+test_probe_rtt_from_answered_send(void **state)
+{
+    struct openvpn_sockaddr a = v4_addr(0x7f000001, 1194);
+    struct openvpn_sockaddr b = v4_addr(0x7f000002, 1194);
+    /* A at t=0 ms, B at t=20 ms, then A again at t=500 ms (a resend) */
+    const struct oob_probe_send sends[3] = {
+        { .dest = a, .sent_at = { .tv_sec = 1000, .tv_usec = 0 } },
+        { .dest = b, .sent_at = { .tv_sec = 1000, .tv_usec = 20000 } },
+        { .dest = a, .sent_at = { .tv_sec = 1000, .tv_usec = 500000 } },
+    };
+    struct timeval rcv = { .tv_sec = 1000, .tv_usec = 520000 };
+
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 2, &a, &rcv), 20);  /* the resend */
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 0, &a, &rcv), 520); /* the first send */
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 1, &b, &rcv), 500);
+
+    /* a transmission to another address, and ids we never sent (below the
+     * base, an id wraps to a huge index) */
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 1, &a, &rcv), -1);
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 3, &a, &rcv), -1);
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, UINT32_MAX, &a, &rcv), -1);
+    assert_int_equal(oob_probe_rtt_ms(sends, 2, 2, &a, &rcv), -1);
+
+    /* a clock that went backwards reads as 0, not as a huge value */
+    rcv.tv_usec = 0;
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 2, &a, &rcv), 0);
+}
+
 /* A payload of just a probe reply is found by the client scan, with all
  * fields surviving. */
 static void
@@ -1001,6 +1033,7 @@ run_oob_tests(void)
         cmocka_unit_test(test_probe_request_check_no_request),
         cmocka_unit_test(test_probe_reply_credits_every_entry_at_address),
         cmocka_unit_test(test_probe_reply_matches_only_its_address),
+        cmocka_unit_test(test_probe_rtt_from_answered_send),
         cmocka_unit_test(test_probe_reply_find),
         cmocka_unit_test(test_probe_reply_find_skips_unknown),
         cmocka_unit_test(test_probe_reply_find_rejects_unknown_mandatory),

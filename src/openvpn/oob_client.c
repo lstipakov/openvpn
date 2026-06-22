@@ -115,21 +115,29 @@ oob_probe_sent_this_round(const struct probe_ctx *pc, const struct openvpn_socka
     return false;
 }
 
-/* Send a probe with the next request_id to dest; false if it did not go out. */
+/* Send a probe with the next request_id to dest, recording when it went out so
+ * a reply's RTT is measured from the transmission it answers; false if it did
+ * not go out. */
 static bool
 oob_probe_send_to(struct probe_ctx *pc, socket_descriptor_t sd,
                   const struct openvpn_sockaddr *dest, socklen_t destlen)
 {
     ASSERT(pc->n_sends < pc->max_sends);
+    struct oob_probe_send *s = &pc->sends[pc->n_sends];
     struct buffer probe;
-    if (!oob_probe_build(pc, pc->id_base + (uint32_t)pc->n_sends, &probe)
-        || sendto(sd, (const char *)BPTR(&probe), (int)BLEN(&probe), 0,
-                  (const struct sockaddr *)dest, destlen)
-               < 0)
+    if (!oob_probe_build(pc, pc->id_base + (uint32_t)pc->n_sends, &probe))
     {
         return false;
     }
-    pc->sends[pc->n_sends++].dest = *dest;
+    openvpn_gettimeofday(&s->sent_at, NULL);
+    if (sendto(sd, (const char *)BPTR(&probe), (int)BLEN(&probe), 0,
+               (const struct sockaddr *)dest, destlen)
+        < 0)
+    {
+        return false;
+    }
+    s->dest = *dest;
+    pc->n_sends++;
     return true;
 }
 
@@ -284,7 +292,7 @@ oob_probe_sockets_close(struct probe_ctx *pc)
     }
 }
 
-/* Parse one received datagram as a probe reply and, if valid and matching one
+/* Parse one received datagram as a probe reply and, if valid and answering one
  * of the probes we sent, record the reply in results. */
 static void
 oob_probe_handle_reply(const struct probe_ctx *pc, const uint8_t *data, int len,
@@ -308,11 +316,16 @@ oob_probe_handle_reply(const struct probe_ctx *pc, const uint8_t *data, int len,
     }
 
     /* The reply must echo the request_id of a probe sent to the address it came
-     * from; with a random id_base that also rejects spoofed replies. */
-    const uint32_t index = reply.request_id - pc->id_base;
-    if (index >= (uint32_t)pc->n_sends || !addr_port_match(from, &pc->sends[index].dest))
+     * from; with a random id_base that also rejects spoofed replies. The RTT
+     * runs from that transmission to now, i.e. including any time the reply
+     * waited in the receive queue while we were still sending. */
+    struct timeval rcv;
+    openvpn_gettimeofday(&rcv, NULL);
+    const int ms =
+        oob_probe_rtt_ms(pc->sends, pc->n_sends, reply.request_id - pc->id_base, from, &rcv);
+    if (ms < 0)
     {
-        return;
+        return; /* answers no probe we sent to that address */
     }
 
     /* Credit the reply to every still-unanswered remote probed at its source
@@ -322,6 +335,7 @@ oob_probe_handle_reply(const struct probe_ctx *pc, const uint8_t *data, int len,
     while (i >= 0)
     {
         results[i].responded = true;
+        results[i].rtt_ms = (unsigned int)ms;
         results[i].reply = reply;
 
         i = oob_probe_next_target_at(from, targets, results, n, i + 1);
@@ -662,8 +676,16 @@ client_probe_and_order_remotes(struct context *c)
         if (results[i].responded)
         {
             responded++;
-            msg(D_LOW, "server-probe: %s:%s answered (priority %d, weight %d)", ce->remote,
-                ce->remote_port, results[i].reply.priority, results[i].reply.weight);
+            /* The margin this server advertised, or the client's override; only
+             * the fastest server's margin applies to its priority group. */
+            int client_margin = c->options.server_probe_latency_margin;
+            int margin = oob_effective_margin(&results[i], client_margin);
+            const char *margin_src = client_margin >= 0 ? "client" : "server-advertised";
+            msg(D_LOW,
+                "server-probe: %s:%s answered (priority %d, weight %d, rtt %u ms;"
+                " latency margin %d ms [%s])",
+                ce->remote, ce->remote_port, results[i].reply.priority, results[i].reply.weight,
+                results[i].rtt_ms, margin, margin_src);
         }
         else
         {
