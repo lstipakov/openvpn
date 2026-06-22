@@ -335,6 +335,11 @@ struct options
 
     bool mtu_test;
 
+    bool server_probe; /* client: probe remotes (--server-probe) and connect best-first */
+    /* client: default candidate-band margin in ms (--server-probe [max-latency-diff]):
+     * servers within this RTT of the fastest are treated as equally fast */
+    int server_probe_latency_margin;
+
     bool mlock;
 
     int keepalive_ping; /* a proxy for ping/ping-restart */

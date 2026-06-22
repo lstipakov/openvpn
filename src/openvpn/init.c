@@ -48,6 +48,7 @@
 #include "ssl_ncp.h"
 #include "tls_crypt.h"
 #include "forward.h"
+#include "oob_client.h"
 #include "auth_token.h"
 #include "mss.h"
 #include "mudp.h"
@@ -4473,6 +4474,10 @@ init_instance(struct context *c, const struct env_set *env, const unsigned int f
             goto sig;
         }
     }
+
+    /* Probe configured remotes and reorder them best-first (--server-probe);
+     * no-op otherwise. Must run before next_connection_entry() picks a remote. */
+    client_probe_and_order_remotes(c);
 
     /* Resets all values to the initial values from the config where needed */
     pre_connect_restore(&c->options, &c->c2.gc);

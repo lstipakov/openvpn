@@ -803,6 +803,11 @@ init_options(struct options *o)
     o->topology = TOP_UNDEF;
     o->ce.proto = PROTO_UDP;
     o->ce.af = AF_UNSPEC;
+
+    /* The client latency margin is -1 = "not set": the client's value is
+     * authoritative when given, otherwise each server's advertised margin (or
+     * the built-in default) applies. */
+    o->server_probe_latency_margin = -1;
     o->ce.bind_ipv6_only = false;
     o->ce.connect_retry_seconds = 1;
     o->ce.connect_retry_seconds_max = 300;
@@ -6505,6 +6510,21 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
     {
         VERIFY_PERMISSION(OPT_P_GENERAL);
         options->mtu_test = true;
+    }
+    else if (streq(p[0], "server-probe") && !p[2])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        options->server_probe = true;
+        if (p[1])
+        {
+            int margin = positive_atoi(p[1], msglevel);
+            if (margin > 0xffff)
+            {
+                msg(msglevel, "--server-probe: max-latency-diff must be 0 to 65535 ms");
+                goto err;
+            }
+            options->server_probe_latency_margin = margin;
+        }
     }
     else if (streq(p[0], "nice") && p[1] && !p[2])
     {

@@ -520,6 +520,8 @@ set(SOURCE_FILES
     src/openvpn/occ.h
     src/openvpn/oob.c
     src/openvpn/oob.h
+    src/openvpn/oob_client.c
+    src/openvpn/oob_client.h
     src/openvpn/openvpn.c
     src/openvpn/openvpn.h
     src/openvpn/openvpn_win32_resources.rc
