@@ -595,6 +595,46 @@ configuration.
   seconds for a response before trying the next server. The default value
   is :code:`120`. This timeout includes proxy and TCP connect timeouts.
 
+--server-probe args
+  Before the first connection attempt, probe all configured UDP remotes
+  out-of-band and reorder the connection list based on the replies.
+
+  Valid syntaxes::
+
+     server-probe
+     server-probe max-latency-diff
+
+  A small probe message is sent to the first resolved address of every UDP
+  remote, and each answering server replies with its advertised priority
+  and weight. Remotes are then reordered following DNS SRV (RFC 2782)
+  semantics: servers that answered are tried before those that did not,
+  grouped by priority (lowest first); within a priority group, servers are
+  picked by weighted-random selection. Round-trip time is not yet taken
+  into account, so ``max-latency-diff`` has no effect for now.
+
+  The probe is currently sent without control-channel wrapping, so it only
+  works against a server configured without ``--tls-auth``,
+  ``--tls-crypt`` or ``--tls-crypt-v2``.
+
+  Only UDP remotes are probed, and only when there are at least two
+  remotes; remotes reached through a SOCKS proxy are not probed. The
+  probes are sent from one socket per address family, set up like the
+  connection socket of the first remote that can be probed; all probed
+  remotes must therefore share its local bind settings (``--local``,
+  ``--lport``, ``--bind``), otherwise probing is skipped and the
+  configured order is used. Remotes that answered are tried first, in the
+  order described above; all other remotes, including TCP ones, follow in
+  their configured order. Probing runs once per process, before the first
+  connection attempt; a reconnect or a SIGUSR1 restart does not probe again.
+
+  Probing delays the first connection attempt by up to one second, plus
+  the time needed to resolve each remote. A server answers only a few
+  probes per period whose timestamp is more than its ``--hand-window``
+  away from its own clock, so a client whose clock is badly wrong may get
+  no replies and then keeps the configured order. Ordering by probe
+  replaces any order that ``--remote-random`` produced. See
+  ``--server-probe-reply`` for the server side.
+
 --static-challenge args
   Enable static challenge/response protocol
 

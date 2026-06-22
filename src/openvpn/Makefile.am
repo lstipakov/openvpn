@@ -109,6 +109,7 @@ openvpn_SOURCES = \
 	pkcs11_openssl.c \
 	pkcs11_mbedtls.c \
 	oob.c oob.h \
+	oob_client.c oob_client.h \
 	openvpn.c openvpn.h \
 	options.c options.h \
 	options_show.c options_show.h \

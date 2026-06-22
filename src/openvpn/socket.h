@@ -408,6 +408,15 @@ void link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int s
 
 socket_descriptor_t create_socket_tcp(struct addrinfo *);
 
+#ifdef TARGET_ANDROID
+/**
+ * Hand \p fd to the VPNService API as a protected socket, so its traffic is not
+ * routed back into a tunnel. \p addr is the intended peer; a local one is left
+ * unprotected.
+ */
+void protect_fd_nonlocal(int fd, const struct sockaddr *addr);
+#endif
+
 /**
  * Create a UDP socket for @p af set up the way a link socket is: --sndbuf/--rcvbuf,
  * --mark, --bind-dev and, when @p bind_addr is given, the local bind (IPV6_V6ONLY

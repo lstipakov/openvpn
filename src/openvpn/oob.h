@@ -38,6 +38,7 @@
 #include "buffer.h"
 #include "control_msg.h"
 #include "session_id.h"
+#include "socket_util.h"
 
 /* Minimum on-wire value length (excluding the 4-byte TLV header) of each TLV:
  * the sizes of its fixed fields in wire order (see the structs below). The
@@ -164,6 +165,39 @@ struct oob_probe_result
     unsigned int rtt_ms;          /* probe round-trip time in ms (responders only) */
     struct oob_probe_reply reply; /* the values the server advertised */
 };
+
+/* Where the client probed one connection entry. */
+struct oob_probe_target
+{
+    struct openvpn_sockaddr dest;
+    socklen_t destlen;
+    bool sent;
+};
+
+/* One probe request transmission. Its request_id is a per-run random base plus
+ * its index in the list of transmissions, so a reply's request_id leads
+ * straight to it. */
+struct oob_probe_send
+{
+    struct openvpn_sockaddr dest;
+};
+
+/**
+ * Find the next entry, from index \p start on, that was probed at \p from and
+ * has not answered yet. Several entries can resolve to the same address, so a
+ * reply is credited to each of them: call again with the returned index + 1
+ * until it returns -1.
+ *
+ * @param from     source address of the reply
+ * @param targets  where each entry was probed
+ * @param results  per-entry results; entries already marked responded are skipped
+ * @param n        number of entries
+ * @param start    first index to consider
+ * @return the entry index, or -1 if none
+ */
+int oob_probe_next_target_at(const struct openvpn_sockaddr *from,
+                             const struct oob_probe_target *targets,
+                             const struct oob_probe_result *results, int n, int start);
 
 /**
  * Order results best-first, in place, per the server-probe selection policy:
