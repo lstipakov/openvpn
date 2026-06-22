@@ -595,6 +595,31 @@ configuration.
   seconds for a response before trying the next server. The default value
   is :code:`120`. This timeout includes proxy and TCP connect timeouts.
 
+--server-probe args
+  Before the first connection attempt, probe all configured UDP remotes
+  out-of-band and reorder the connection list based on the replies.
+
+  Valid syntaxes::
+
+     server-probe
+     server-probe max-latency-diff
+
+  A small probe message is sent to the first resolved address of every UDP
+  remote, and each answering server replies with its advertised priority
+  and weight. Remotes are then reordered following DNS SRV (RFC 2782)
+  semantics: servers that answered are tried before those that did not,
+  grouped by priority (lowest first); within a priority group, servers are
+  picked by weighted-random selection. Round-trip time is not yet taken
+  into account, so ``max-latency-diff`` has no effect for now.
+
+  The probe is currently sent without control-channel wrapping, so it only
+  works against a server configured without ``--tls-auth``,
+  ``--tls-crypt`` or ``--tls-crypt-v2``.
+
+  Only UDP remotes are probed; TCP remotes keep their configured
+  position. Probing runs once, before the first connection attempt.
+  See ``--server-probe-reply`` for the server side.
+
 --static-challenge args
   Enable static challenge/response protocol
 
