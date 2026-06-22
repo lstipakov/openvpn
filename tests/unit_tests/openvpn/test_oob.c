@@ -637,6 +637,36 @@ test_probe_reply_matches_only_its_address(void **state)
     assert_int_equal(oob_probe_next_target_at(&a_other_port, targets, results, 3, 0), -1);
 }
 
+/* The RTT of a reply is measured from the transmission its response_id names,
+ * which must have gone to the address the reply came from. */
+static void
+test_probe_rtt_from_answered_send(void **state)
+{
+    struct openvpn_sockaddr a = v4_addr(0x7f000001, 1194);
+    struct openvpn_sockaddr b = v4_addr(0x7f000002, 1194);
+    /* A at t=0 ms, B at t=20 ms, then A again at t=500 ms (a resend) */
+    const struct oob_probe_send sends[3] = {
+        { .dest = a, .sent_at = { .tv_sec = 1000, .tv_usec = 0 } },
+        { .dest = b, .sent_at = { .tv_sec = 1000, .tv_usec = 20000 } },
+        { .dest = a, .sent_at = { .tv_sec = 1000, .tv_usec = 500000 } },
+    };
+    struct timeval rcv = { .tv_sec = 1000, .tv_usec = 520000 };
+
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 3, &a, &rcv), 20);  /* the resend */
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 1, &a, &rcv), 520); /* the first send */
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 2, &b, &rcv), 500);
+
+    /* a transmission to another address, and ids we never sent */
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 2, &a, &rcv), -1);
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 0, &a, &rcv), -1);
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 4, &a, &rcv), -1);
+    assert_int_equal(oob_probe_rtt_ms(sends, 2, 3, &a, &rcv), -1);
+
+    /* a clock that went backwards reads as 0, not as a huge value */
+    rcv.tv_usec = 0;
+    assert_int_equal(oob_probe_rtt_ms(sends, 3, 3, &a, &rcv), 0);
+}
+
 /* A PROBE_REPLY carrying a probe_reply is found by the client scan, with all
  * fields surviving. */
 static void
@@ -1038,6 +1068,7 @@ run_oob_tests(void)
         cmocka_unit_test(test_server_probe_check_no_parameter),
         cmocka_unit_test(test_probe_reply_credits_every_entry_at_address),
         cmocka_unit_test(test_probe_reply_matches_only_its_address),
+        cmocka_unit_test(test_probe_rtt_from_answered_send),
         cmocka_unit_test(test_client_reply_read_finds_reply),
         cmocka_unit_test(test_client_reply_read_skips_unknown),
         cmocka_unit_test(test_client_reply_read_rejects_unknown_mandatory),

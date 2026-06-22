@@ -208,11 +208,26 @@ struct oob_probe_target
 };
 
 /* One SERVER_PROBE transmission. Its message_id is its index in the list of
- * transmissions + 1. */
+ * transmissions + 1, so a reply's response_id leads straight to it. */
 struct oob_probe_send
 {
     struct openvpn_sockaddr dest;
+    struct timeval sent_at;
 };
+
+/**
+ * Round-trip time of a reply, measured from the transmission it answers.
+ *
+ * @param sends        every transmission so far
+ * @param n_sends      number of transmissions
+ * @param response_id  response_id of the reply
+ * @param from         source address of the reply
+ * @param rcv          when the reply arrived
+ * @return milliseconds (0 if the clock went backwards), or -1 if response_id
+ *         names no transmission to from
+ */
+int oob_probe_rtt_ms(const struct oob_probe_send *sends, int n_sends, uint32_t response_id,
+                     const struct openvpn_sockaddr *from, const struct timeval *rcv);
 
 /**
  * Find the next entry, from index \p start on, that was probed at \p from and

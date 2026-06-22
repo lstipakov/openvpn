@@ -180,6 +180,21 @@ oob_probe_next_target_at(const struct openvpn_sockaddr *from, const struct oob_p
     return -1;
 }
 
+int
+oob_probe_rtt_ms(const struct oob_probe_send *sends, int n_sends, uint32_t response_id,
+                 const struct openvpn_sockaddr *from, const struct timeval *rcv)
+{
+    if (response_id == 0 || response_id > (uint32_t)n_sends
+        || !addr_port_match(from, &sends[response_id - 1].dest))
+    {
+        return -1; /* not a probe we sent, or not to where the reply came from */
+    }
+    const struct timeval *sent_at = &sends[response_id - 1].sent_at;
+    const long ms = (long)(rcv->tv_sec - sent_at->tv_sec) * 1000
+                    + (rcv->tv_usec - sent_at->tv_usec) / 1000;
+    return (ms > 0) ? (int)ms : 0;
+}
+
 /* Base ordering: responders before non-responders, then by priority (lower
  * first), then by RTT (lower first), then by original index for determinism.
  * This groups responders into priority runs pre-sorted by RTT, which the
