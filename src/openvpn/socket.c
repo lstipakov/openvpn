@@ -733,7 +733,7 @@ create_socket(struct link_socket *sock, struct addrinfo *addr)
 }
 
 #ifdef TARGET_ANDROID
-static void
+void
 protect_fd_nonlocal(int fd, const struct sockaddr *addr)
 {
     if (!management)
