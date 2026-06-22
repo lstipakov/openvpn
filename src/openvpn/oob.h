@@ -37,6 +37,7 @@
 
 #include "buffer.h"
 #include "session_id.h"
+#include "socket_util.h"
 
 /* OOB message types: the 16-bit value at the start of an OOB payload, before
  * its TLV entries. Distinct from the TLV-type space (0x2xx); see the "Messages"
@@ -188,6 +189,37 @@ struct oob_probe_result
     unsigned int rtt_ms;          /* probe round-trip time in ms (responders only) */
     struct oob_probe_reply reply; /* the values the server advertised */
 };
+
+/* Where the client probed one connection entry. */
+struct oob_probe_target
+{
+    struct openvpn_sockaddr dest;
+    socklen_t destlen;
+    bool sent;
+};
+
+/**
+ * Find the next entry, from index @p start on, that was probed at @p from and
+ * has not answered yet. Several entries can resolve to the same address, so a
+ * reply is credited to each of them: call again with the returned index + 1
+ * until it returns -1.
+ *
+ * @param from     source address of the reply
+ * @param targets  where each entry was probed
+ * @param results  per-entry results; entries already marked responded are skipped
+ * @param n        number of entries
+ * @param start    first index to consider
+ * @return the entry index, or -1 if none
+ */
+int oob_probe_next_target_at(const struct openvpn_sockaddr *from,
+                             const struct oob_probe_target *targets,
+                             const struct oob_probe_result *results, int n, int start);
+
+/**
+ * Is @p addr (address and port) one of the @p n addresses in @p list?
+ */
+bool oob_addr_list_contains(const struct openvpn_sockaddr *list, int n,
+                            const struct openvpn_sockaddr *addr);
 
 /**
  * Order results best-first, in place, per the server-probe selection policy:

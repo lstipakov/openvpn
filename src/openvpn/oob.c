@@ -148,6 +148,33 @@ oob_server_probe_accept(struct buffer *probe_payload, uint64_t now, uint64_t win
     return oob_timestamp_in_window(param.timestamp, now, window_secs);
 }
 
+int
+oob_probe_next_target_at(const struct openvpn_sockaddr *from, const struct oob_probe_target *targets,
+                         const struct oob_probe_result *results, int n, int start)
+{
+    for (int i = start; i < n; i++)
+    {
+        if (targets[i].sent && !results[i].responded && addr_port_match(from, &targets[i].dest))
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+bool
+oob_addr_list_contains(const struct openvpn_sockaddr *list, int n, const struct openvpn_sockaddr *addr)
+{
+    for (int i = 0; i < n; i++)
+    {
+        if (addr_port_match(&list[i], addr))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Base ordering: responders before non-responders, then by priority (lower
  * first), then by RTT (lower first), then by original index for determinism.
  * This groups responders into priority runs pre-sorted by RTT, which the

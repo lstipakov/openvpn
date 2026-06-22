@@ -508,6 +508,80 @@ test_server_probe_accept_no_parameter(void **state)
     gc_free(&gc);
 }
 
+static struct openvpn_sockaddr
+v4_addr(uint32_t addr, uint16_t port)
+{
+    struct openvpn_sockaddr sa = { 0 };
+    sa.addr.in4.sin_family = AF_INET;
+    sa.addr.in4.sin_addr.s_addr = htonl(addr);
+    sa.addr.in4.sin_port = htons(port);
+    return sa;
+}
+
+static struct oob_probe_target
+probe_target(struct openvpn_sockaddr dest, bool sent)
+{
+    return (struct oob_probe_target){ .dest = dest, .destlen = sizeof(dest.addr.in4), .sent = sent };
+}
+
+/* Two entries resolving to the same address are both credited by one reply,
+ * and a second reply from that address credits nothing more. */
+static void
+test_probe_reply_credits_every_entry_at_address(void **state)
+{
+    struct openvpn_sockaddr a = v4_addr(0x7f000001, 1194);
+    struct oob_probe_target targets[2] = { probe_target(a, true), probe_target(a, true) };
+    struct oob_probe_result results[2] = { 0 };
+
+    int i = oob_probe_next_target_at(&a, targets, results, 2, 0);
+    assert_int_equal(i, 0);
+    results[i].responded = true;
+    i = oob_probe_next_target_at(&a, targets, results, 2, i + 1);
+    assert_int_equal(i, 1);
+    results[i].responded = true;
+    assert_int_equal(oob_probe_next_target_at(&a, targets, results, 2, i + 1), -1);
+
+    /* the server's second reply finds nothing left to credit */
+    assert_int_equal(oob_probe_next_target_at(&a, targets, results, 2, 0), -1);
+}
+
+/* A reply only matches entries probed at its address, and only those actually
+ * sent; a different port is a different address. */
+static void
+test_probe_reply_matches_only_its_address(void **state)
+{
+    struct openvpn_sockaddr a = v4_addr(0x7f000001, 1194);
+    struct openvpn_sockaddr b = v4_addr(0x7f000002, 1194);
+    struct openvpn_sockaddr a_other_port = v4_addr(0x7f000001, 1195);
+    struct oob_probe_target targets[3] = {
+        probe_target(a, true),
+        probe_target(b, true),
+        probe_target(a, false), /* resolved but never sent */
+    };
+    struct oob_probe_result results[3] = { 0 };
+
+    assert_int_equal(oob_probe_next_target_at(&b, targets, results, 3, 0), 1);
+    assert_int_equal(oob_probe_next_target_at(&b, targets, results, 3, 2), -1);
+    assert_int_equal(oob_probe_next_target_at(&a, targets, results, 3, 0), 0);
+    assert_int_equal(oob_probe_next_target_at(&a, targets, results, 3, 1), -1);
+    assert_int_equal(oob_probe_next_target_at(&a_other_port, targets, results, 3, 0), -1);
+}
+
+/* The per-round list of probed addresses compares address and port. */
+static void
+test_addr_list_contains(void **state)
+{
+    struct openvpn_sockaddr list[2] = { v4_addr(0x7f000001, 1194), v4_addr(0x7f000002, 1194) };
+    struct openvpn_sockaddr same = v4_addr(0x7f000002, 1194);
+    struct openvpn_sockaddr other_port = v4_addr(0x7f000002, 1195);
+    struct openvpn_sockaddr other_host = v4_addr(0x7f000003, 1194);
+
+    assert_true(oob_addr_list_contains(list, 2, &same));
+    assert_false(oob_addr_list_contains(list, 2, &other_port));
+    assert_false(oob_addr_list_contains(list, 2, &other_host));
+    assert_false(oob_addr_list_contains(list, 0, &same));
+}
+
 /* A PROBE_REPLY carrying a probe_reply is found by the client scan, with all
  * fields surviving. */
 static void
@@ -872,6 +946,9 @@ main(void)
         cmocka_unit_test(test_server_probe_accept_valid),
         cmocka_unit_test(test_server_probe_accept_stale),
         cmocka_unit_test(test_server_probe_accept_no_parameter),
+        cmocka_unit_test(test_probe_reply_credits_every_entry_at_address),
+        cmocka_unit_test(test_probe_reply_matches_only_its_address),
+        cmocka_unit_test(test_addr_list_contains),
         cmocka_unit_test(test_client_reply_read_finds_reply),
         cmocka_unit_test(test_client_reply_read_skips_unknown),
         cmocka_unit_test(test_client_reply_read_rejects_unknown_mandatory),
