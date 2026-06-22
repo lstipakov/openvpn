@@ -608,9 +608,13 @@ configuration.
   remote, and each answering server replies with its advertised priority
   and weight. Remotes are then reordered following DNS SRV (RFC 2782)
   semantics: servers that answered are tried before those that did not,
-  grouped by priority (lowest first); within a priority group, servers are
-  picked by weighted-random selection. Round-trip time is not yet taken
-  into account, so ``max-latency-diff`` has no effect for now.
+  grouped by priority (lowest first); within a priority group, servers
+  whose measured round-trip time is within ``max-latency-diff``
+  milliseconds of the fastest one are picked by weighted-random
+  selection, the others follow in round-trip-time order. When
+  ``max-latency-diff`` is not given, the margin advertised by the
+  answering server is used, falling back to a built-in default of
+  :code:`10` ms.
 
   The probe is currently sent without control-channel wrapping, so it only
   works against a server configured without ``--tls-auth``,
