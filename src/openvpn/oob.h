@@ -196,6 +196,7 @@ struct oob_probe_target
     struct openvpn_sockaddr dest;
     socklen_t destlen;
     bool sent;
+    struct timeval sent_at; /* when the probe was sent, for RTT measurement */
 };
 
 /**

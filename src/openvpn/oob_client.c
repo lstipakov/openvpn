@@ -271,10 +271,16 @@ oob_probe_handle_reply(const uint8_t *data, int len, const struct session_id *cl
     /* Credit the reply to every still-unanswered remote probed at its source
      * address: several entries can resolve to the same address, and each takes
      * the first reply for it. */
+    struct timeval rcv;
+    openvpn_gettimeofday(&rcv, NULL);
     int i = oob_probe_next_target_at(from, targets, results, n, 0);
     while (i >= 0)
     {
+        long ms = (long)(rcv.tv_sec - targets[i].sent_at.tv_sec) * 1000
+                  + (rcv.tv_usec - targets[i].sent_at.tv_usec) / 1000;
+
         results[i].responded = true;
+        results[i].rtt_ms = (ms > 0) ? (unsigned int)ms : 0;
         results[i].reply = reply;
 
         i = oob_probe_next_target_at(from, targets, results, n, i + 1);
@@ -592,6 +598,7 @@ client_probe_and_order_remotes(struct context *c)
             }
             pc.probed[pc.n_probed++] = targets[i].dest;
         }
+        openvpn_gettimeofday(&targets[i].sent_at, NULL);
         targets[i].sent = true;
         sent_count++;
     }
@@ -615,8 +622,16 @@ client_probe_and_order_remotes(struct context *c)
         if (results[i].responded)
         {
             responded++;
-            msg(D_LOW, "server-probe: %s:%s answered (priority %d, weight %d)", ce->remote,
-                ce->remote_port, results[i].reply.priority, results[i].reply.weight);
+            /* Effective candidate-band margin and where it came from: the
+             * client's own setting wins, else the server's advertised value. */
+            int client_margin = c->options.server_probe_latency_margin;
+            int margin = oob_effective_margin(&results[i], client_margin);
+            const char *margin_src = client_margin >= 0 ? "client" : "server-advertised";
+            msg(D_LOW,
+                "server-probe: %s:%s answered (priority %d, weight %d, rtt %u ms;"
+                " latency margin %d ms [%s])",
+                ce->remote, ce->remote_port, results[i].reply.priority, results[i].reply.weight,
+                results[i].rtt_ms, margin, margin_src);
         }
         else
         {
