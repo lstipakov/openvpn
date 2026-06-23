@@ -29,6 +29,8 @@
 #include "oob_client.h"
 #include "openvpn.h"
 #include "oob.h"
+#include "init.h"
+#include "ssl.h"
 #include "ssl_pkt.h"
 #include "session_id.h"
 #include "socket.h"
@@ -68,9 +70,9 @@ struct probe_ctx
     int max_sends;
     int round_start; /* first transmission of the current round */
     /* What each probe is built from; only the message_id differs. */
+    struct tls_auth_standalone *tas;
     struct session_id *client_sid;
     struct oob_probe_parameter param;
-    uint8_t packet[64];                /* the probe being sent */
 #ifdef TARGET_ANDROID
     bool fd_protected[PROBE_AF_COUNT]; /* VPNService protect(), once per socket */
 #endif
@@ -84,19 +86,72 @@ probe_af_index(int af)
     return (af == AF_INET6) ? PROBE_AF_V6 : PROBE_AF_V4;
 }
 
-/* Build a plaintext SERVER_PROBE packet with the given message_id:
- *   [opcode | key_id=0] [client session id] [SERVER_PROBE message]
- * This is the unauthenticated OOB wire format; adding tls-auth/tls-crypt
- * wrapping for the probe is a follow-up (it only works against a server with
- * no control-channel wrapping for now). The result points into pc->packet:
- * send it before building the next. */
+/* Build the standalone wrapping context the probe is sent with, mirroring the
+ * one the server answers it with, keyed like ce, the entry every other probed
+ * remote was checked against; without tls-auth/tls-crypt it stays in
+ * TLS_WRAP_NONE and the probe goes out in plaintext. Returns NULL (and logs)
+ * for tls-crypt-v2, which the probe cannot carry yet. */
+static struct tls_auth_standalone *
+oob_probe_init_tls_auth_standalone(struct context *c, const struct connection_entry *ce,
+                                   struct gc_arena *gc)
+{
+    /* tls-crypt-v2 wraps with a per-client key the server only learns from the
+     * wrapped client key (WKc) carried in the TLS handshake. An out-of-band
+     * probe carries no WKc, so the server cannot unwrap it; skip probing rather
+     * than send something unverifiable. */
+    if (ce->tls_crypt_v2_file)
+    {
+        msg(D_LOW, "server-probe: not supported with tls-crypt-v2; using configured order");
+        return NULL;
+    }
+
+    /* options.ce is not mapped yet; options_postprocess_mutate_ce() has already
+     * copied any global key into ce. Loaded again per-connection later. */
+    do_init_tls_wrap_key(c, ce);
+
+    struct tls_options to;
+    CLEAR(to);
+    init_tls_wrap_ctx(&to.tls_wrap, ce, c->options.tls_client, &c->c1.ks, &c->c1.pid_persist);
+    to.replay_window = c->options.replay_window;
+    to.replay_time = c->options.replay_time;
+
+    struct tls_auth_standalone *tas = tls_auth_standalone_init(&to, gc);
+
+    tls_init_control_channel_frame_parameters(&tas->frame, ce->tls_mtu);
+    tas->tls_wrap.work = alloc_buf_gc(BUF_SIZE(&tas->frame), gc);
+    tas->workbuf = alloc_buf_gc(BUF_SIZE(&tas->frame), gc);
+
+    return tas;
+}
+
+/* Release the probe's wrapping context and the key material
+ * do_init_tls_wrap_key() loaded for it: do_init_crypto_tls_c1() loads the same
+ * fields again later without freeing them first. */
+static void
+oob_probe_free_wrap(struct context *c, struct tls_auth_standalone *tas)
+{
+    tls_auth_standalone_free(tas);
+    free_key_ctx_bi(&c->c1.ks.tls_wrap_key);
+    CLEAR(c->c1.ks.tls_wrap_key);
+    /* the raw key bytes too: do_init_crypto_tls_c1() may never load a key over
+     * them, so they would otherwise stay resident for the process lifetime */
+    secure_memzero(&c->c1.ks.original_wrap_keydata, sizeof(c->c1.ks.original_wrap_keydata));
+}
+
+/* Build a wrapped SERVER_PROBE with the given message_id. The result points
+ * into tas's work buffers: send it before building the next. */
 static bool
 oob_probe_build(struct probe_ctx *pc, uint32_t message_id, struct buffer *probe)
 {
-    buf_set_write(probe, pc->packet, sizeof(pc->packet));
-    uint8_t header = (uint8_t)(P_CONTROL_OOB_V1 << P_OPCODE_SHIFT);
-    return buf_write_u8(probe, header) && session_id_write(pc->client_sid, probe)
-           && oob_server_probe_write(probe, message_id, &pc->param);
+    uint8_t data[64];
+    struct buffer payload;
+    buf_set_write(&payload, data, sizeof(data));
+    if (!oob_server_probe_write(&payload, message_id, &pc->param))
+    {
+        return false;
+    }
+    *probe = tls_wrap_oob_standalone(&pc->tas->tls_wrap, pc->tas, pc->client_sid, &payload);
+    return BLEN(probe) > 0;
 }
 
 /* Was addr already probed in the current round? */
@@ -125,6 +180,7 @@ oob_probe_send_to(struct probe_ctx *pc, socket_descriptor_t sd,
     struct buffer probe;
     if (!oob_probe_build(pc, (uint32_t)pc->n_sends + 1, &probe))
     {
+        msg(D_LOW, "server-probe: could not build probe packet");
         return false;
     }
     openvpn_gettimeofday(&s->sent_at, NULL);
@@ -197,6 +253,22 @@ oob_probe_same_bind(const struct connection_entry *a, const struct connection_en
     oob_probe_bind_target(b, o, &host_b, &port_b);
     return a->bind_ipv6_only == b->bind_ipv6_only && str_equal_or_both_null(host_a, host_b)
            && str_equal_or_both_null(port_a, port_b);
+}
+
+/* Do a and b wrap the control channel with the same key (--tls-auth,
+ * --tls-crypt, --tls-crypt-v2 and key direction)? Probes are wrapped with the
+ * first probeable entry's key, so a server keyed differently could never answer
+ * them. */
+static bool
+oob_probe_same_wrap(const struct connection_entry *a, const struct connection_entry *b)
+{
+    return str_equal_or_both_null(a->tls_auth_file, b->tls_auth_file)
+           && a->tls_auth_file_inline == b->tls_auth_file_inline
+           && a->key_direction == b->key_direction
+           && str_equal_or_both_null(a->tls_crypt_file, b->tls_crypt_file)
+           && a->tls_crypt_file_inline == b->tls_crypt_file_inline
+           && str_equal_or_both_null(a->tls_crypt_v2_file, b->tls_crypt_v2_file)
+           && a->tls_crypt_v2_file_inline == b->tls_crypt_v2_file_inline;
 }
 
 /* Resolve the local bind address of ce's connection socket; NULL with --nobind.
@@ -293,7 +365,7 @@ oob_probe_sockets_close(struct probe_ctx *pc)
 /* Parse one received datagram as a PROBE_REPLY and, if valid and answering one
  * of the probes we sent, record the reply in results. */
 static void
-oob_probe_handle_reply(const struct probe_ctx *pc, const uint8_t *data, int len,
+oob_probe_handle_reply(const struct probe_ctx *pc, uint8_t *data, int len,
                        const struct openvpn_sockaddr *from, const struct oob_probe_target *targets,
                        struct oob_probe_result *results, int n)
 {
@@ -305,7 +377,19 @@ oob_probe_handle_reply(const struct probe_ctx *pc, const uint8_t *data, int len,
 
     struct buffer buf;
     buf_set_read(&buf, data, (size_t)len);
-    buf_advance(&buf, 1 + SID_SIZE); /* skip opcode + server session id */
+
+    /* Unwrap the reply with the same control-channel path the server used to
+     * wrap it: this verifies the tls-auth HMAC / decrypts tls-crypt, and (in all
+     * modes) strips the opcode + server session id, leaving buf at the OOB
+     * message. read_control_auth() mutates the wrapping context, so we work on a
+     * per-packet copy (as tls_pre_decrypt_lite() does on the server). The peer
+     * address is only used for log messages, and tls_options only for
+     * tls-crypt-v2 metadata checks, so both are passed as NULL. */
+    struct tls_wrap_ctx wrap = pc->tas->tls_wrap;
+    if (!read_control_auth(&buf, &wrap, NULL, NULL))
+    {
+        return; /* not for us, or failed authentication */
+    }
 
     uint32_t response_id;
     struct oob_probe_reply reply;
@@ -540,11 +624,20 @@ client_probe_and_order_remotes(struct context *c)
             tmpl = ce;
             continue;
         }
+        const char *differs = NULL;
         if (!oob_probe_same_bind(tmpl, ce, &c->options))
         {
-            msg(D_LOW, "server-probe: %s:%s binds differently from %s:%s;"
+            differs = "binds";
+        }
+        else if (!oob_probe_same_wrap(tmpl, ce))
+        {
+            differs = "wraps the control channel";
+        }
+        if (differs)
+        {
+            msg(D_LOW, "server-probe: %s:%s %s differently from %s:%s;"
                        " not probing, using configured order",
-                ce->remote, ce->remote_port, tmpl->remote, tmpl->remote_port);
+                ce->remote, ce->remote_port, differs, tmpl->remote, tmpl->remote_port);
             gc_free(&gc);
             return;
         }
@@ -556,20 +649,36 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
+    /* Wrapping context for the probe (tls-auth/tls-crypt, or plaintext if
+     * neither). NULL means this configuration cannot be probed; keep the
+     * configured order. */
+    struct tls_auth_standalone *tas = oob_probe_init_tls_auth_standalone(c, tmpl, &gc);
+    if (!tas)
+    {
+        gc_free(&gc);
+        return;
+    }
+
     struct probe_ctx pc = { .sd = { SOCKET_UNDEFINED, SOCKET_UNDEFINED } };
     struct oob_probe_target *targets = gc_malloc(sizeof(*targets) * l->len, true, &gc);
     struct oob_probe_result *results = gc_malloc(sizeof(*results) * l->len, true, &gc);
 
-    /* Every probe carries the same session id and probe_parameter; each
-     * transmission gets a message_id of its own. */
+    /* Every probe is a single probe_parameter TLV, wrapped (or sent in
+     * plaintext) like any other control packet, with the client session id as
+     * the sender session id. Each transmission is built on its own, as each
+     * carries its own message_id. */
+    pc.tas = tas;
     pc.client_sid = &client_sid;
     pc.param = (struct oob_probe_parameter){
         .timestamp = (uint64_t)now,
         .flags = 0,
     };
 
-    msg(D_LOW, "server-probe: probing %d remote(s) with a %d ms window", l->len,
-        OOB_PROBE_WINDOW_MS);
+    const char *wrap_name = (tas->tls_wrap.mode == TLS_WRAP_CRYPT)  ? "tls-crypt"
+                            : (tas->tls_wrap.mode == TLS_WRAP_AUTH) ? "tls-auth"
+                                                                    : "none (plaintext)";
+    msg(D_LOW, "server-probe: probing %d remote(s) with a %d ms window, control-channel wrapping: %s",
+        l->len, OOB_PROBE_WINDOW_MS, wrap_name);
 
     /* Resolve every remote first, so only the address families actually in use
      * get a probe socket. */
@@ -616,6 +725,7 @@ client_probe_and_order_remotes(struct context *c)
         {
             freeaddrinfo(bind_local);
         }
+        oob_probe_free_wrap(c, tas);
         gc_free(&gc);
         return;
     }
@@ -709,5 +819,6 @@ client_probe_and_order_remotes(struct context *c)
     msg(M_INFO, "server-probe: %d of %d probed remote(s) answered; connecting best-first",
         responded, sent_count);
 
+    oob_probe_free_wrap(c, tas);
     gc_free(&gc);
 }
