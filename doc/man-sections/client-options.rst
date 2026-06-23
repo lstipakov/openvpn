@@ -604,7 +604,7 @@ configuration.
      server-probe
      server-probe max-latency-diff
 
-  A small probe message is sent to the first resolved address of every UDP
+  A small probe message is sent to every resolved address of every UDP
   remote, and each answering server replies with its advertised priority
   and weight. Remotes are then reordered following DNS SRV (RFC 2782)
   semantics: servers that answered are tried before those that did not,
