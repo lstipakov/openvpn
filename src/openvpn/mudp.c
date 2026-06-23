@@ -238,7 +238,12 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
         /* Out-of-band server probe. state->newbuf points at the TLV payload
          * (read_control_auth has stripped the opcode, session id and any
          * tls-auth/tls-crypt wrapping). Answer it without creating a session. */
-        struct oob_probe_reply reply;
+        /* what we advertise; oob_build_probe_reply() adds the peer's session id */
+        struct oob_probe_reply reply = {
+            .priority = (uint16_t)m->top.options.server_probe_reply_priority,
+            .weight = (uint16_t)m->top.options.server_probe_reply_weight,
+            .max_latency_diff = (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
+        };
         if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
                                    &state->peer_session_id, &reply))
         {
