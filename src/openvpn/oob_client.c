@@ -29,6 +29,8 @@
 #include "oob_client.h"
 #include "openvpn.h"
 #include "oob.h"
+#include "init.h"
+#include "ssl.h"
 #include "ssl_pkt.h"
 #include "session_id.h"
 #include "socket.h"
@@ -74,21 +76,67 @@ probe_af_index(int af)
     return (af == AF_INET6) ? PROBE_AF_V6 : PROBE_AF_V4;
 }
 
-/* Build a plaintext SERVER_PROBE packet:
- *   [opcode | key_id=0] [client session id] [SERVER_PROBE message]
- * This is the unauthenticated OOB wire format; adding tls-auth/tls-crypt
- * wrapping for the probe is a follow-up (it only works against a server with
- * no control-channel wrapping for now). */
-static bool
-oob_probe_build_packet(struct buffer *buf, const struct session_id *client_sid)
+/* Build a standalone control-channel wrapping context for the probe, mirroring
+ * the tls_auth_standalone the server uses to answer it. With neither tls-auth
+ * nor tls-crypt configured the context stays in TLS_WRAP_NONE and the probe is
+ * sent in plaintext, exactly as before; with either configured the probe is
+ * authenticated/encrypted like any other control packet. Returns NULL (and
+ * logs) for configurations the probe cannot wrap yet, in which case the caller
+ * skips probing and keeps the configured remote order. */
+static struct tls_auth_standalone *
+oob_probe_init_tls_auth_standalone(struct context *c, struct gc_arena *gc)
 {
-    const struct oob_probe_parameter param = {
-        .timestamp = (uint64_t)now,
-        .flags = 0,
-    };
-    uint8_t header = (uint8_t)(P_CONTROL_OOB_V1 << P_OPCODE_SHIFT);
-    return buf_write_u8(buf, header) && session_id_write(client_sid, buf)
-           && oob_server_probe_write(buf, &param);
+    /* The probe runs before next_connection_entry() maps a connection entry
+     * into options.ce, so take the wrapping config from the first connection
+     * entry directly. A global --tls-auth/--tls-crypt is copied into every
+     * connection-list entry by options_postprocess_mutate_ce(), so the first
+     * entry carries it even though options.ce does not yet. (Probing wraps a
+     * single packet for all remotes, so per-connection-block keys are not
+     * supported; the first entry's wrapping is used for all.) */
+    const struct connection_entry *ce = c->options.connection_list->array[0];
+
+    /* tls-crypt-v2 wraps with a per-client key the server only learns from the
+     * wrapped client key (WKc) carried in the TLS handshake. An out-of-band
+     * probe carries no WKc, so the server cannot unwrap it; skip probing rather
+     * than send something unverifiable. */
+    if (ce->tls_crypt_v2_file)
+    {
+        msg(D_LOW, "server-probe: not supported with tls-crypt-v2; using configured order");
+        return NULL;
+    }
+
+    /* Load the tls-auth/tls-crypt key material into c->c1.ks (a no-op if neither
+     * is configured). This is run again per-connection later; calling it early
+     * here is harmless. */
+    do_init_tls_wrap_key(c, ce);
+
+    struct tls_options to;
+    CLEAR(to);
+    init_tls_wrap_ctx(&to.tls_wrap, ce, c->options.tls_client, &c->c1.ks, &c->c1.pid_persist);
+    to.replay_window = c->options.replay_window;
+    to.replay_time = c->options.replay_time;
+
+    struct tls_auth_standalone *tas = tls_auth_standalone_init(&to, gc);
+
+    /* Control-channel frame and work buffers, mirroring do_init_frame_tls(). */
+    tls_init_control_channel_frame_parameters(&tas->frame, ce->tls_mtu);
+    tas->tls_wrap.work = alloc_buf_gc(BUF_SIZE(&tas->frame), gc);
+    tas->workbuf = alloc_buf_gc(BUF_SIZE(&tas->frame), gc);
+
+    return tas;
+}
+
+/* Release the probe's wrapping context and the key material
+ * do_init_tls_wrap_key() loaded for it: do_init_crypto_tls_c1() loads the same
+ * fields again later without freeing them first. */
+static void
+oob_probe_free_wrap(struct context *c, struct tls_auth_standalone *tas)
+{
+    tls_auth_standalone_free(tas);
+    free_key_ctx_bi(&c->c1.ks.tls_wrap_key);
+    CLEAR(c->c1.ks.tls_wrap_key);
+    buf_clear(&c->c1.ks.tls_crypt_v2_wkc);
+    free_buf(&c->c1.ks.tls_crypt_v2_wkc);
 }
 
 /* The local address and port ce's connection socket binds: its first --local,
@@ -146,6 +194,21 @@ oob_probe_same_bind(const struct connection_entry *a, const struct connection_en
     oob_probe_bind_target(b, o, &host_b, &port_b);
     return a->bind_ipv6_only == b->bind_ipv6_only && str_equal_or_both_null(host_a, host_b)
            && str_equal_or_both_null(port_a, port_b);
+}
+
+/* Do a and b wrap the control channel with the same key (--tls-auth,
+ * --tls-crypt, --tls-crypt-v2 and key direction)? The one probe is wrapped
+ * with entry 0's key, so a server keyed differently could never answer it. */
+static bool
+oob_probe_same_wrap(const struct connection_entry *a, const struct connection_entry *b)
+{
+    return str_equal_or_both_null(a->tls_auth_file, b->tls_auth_file)
+           && a->tls_auth_file_inline == b->tls_auth_file_inline
+           && a->key_direction == b->key_direction
+           && str_equal_or_both_null(a->tls_crypt_file, b->tls_crypt_file)
+           && a->tls_crypt_file_inline == b->tls_crypt_file_inline
+           && str_equal_or_both_null(a->tls_crypt_v2_file, b->tls_crypt_v2_file)
+           && a->tls_crypt_v2_file_inline == b->tls_crypt_v2_file_inline;
 }
 
 /* Resolve the local bind address of ce's connection socket; NULL with --nobind.
@@ -242,9 +305,9 @@ oob_probe_sockets_close(struct probe_ctx *pc)
 /* Parse one received datagram as a PROBE_REPLY and, if valid and matching one
  * of the probes we sent, record the reply in results. */
 static void
-oob_probe_handle_reply(const uint8_t *data, int len, const struct session_id *client_sid,
-                       const struct openvpn_sockaddr *from, const struct oob_probe_target *targets,
-                       struct oob_probe_result *results, int n)
+oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_sid,
+                       const struct tls_wrap_ctx *base_wrap, const struct openvpn_sockaddr *from,
+                       const struct oob_probe_target *targets, struct oob_probe_result *results, int n)
 {
     /* Need at least the opcode byte and the session id. */
     if (len < 1 + (int)SID_SIZE || (data[0] >> P_OPCODE_SHIFT) != P_CONTROL_OOB_V1)
@@ -254,7 +317,20 @@ oob_probe_handle_reply(const uint8_t *data, int len, const struct session_id *cl
 
     struct buffer buf;
     buf_set_read(&buf, data, (size_t)len);
-    buf_advance(&buf, 1 + SID_SIZE); /* skip opcode + server session id */
+
+    /* Unwrap the reply with the same control-channel path the server used to
+     * wrap it: this verifies the tls-auth HMAC / decrypts tls-crypt, and (in all
+     * modes) strips the opcode + server session id, leaving buf at the TLV
+     * payload. With no tls-auth/tls-crypt it just strips those header bytes, as
+     * before. read_control_auth() mutates the wrapping context, so we work on a
+     * per-packet copy (as tls_pre_decrypt_lite() does on the server). The peer
+     * address is only used for log messages, and tls_options only for
+     * tls-crypt-v2 metadata checks, so both are passed as NULL. */
+    struct tls_wrap_ctx wrap = *base_wrap;
+    if (!read_control_auth(&buf, &wrap, NULL, NULL))
+    {
+        return; /* not for us, or failed authentication */
+    }
 
     struct oob_probe_reply reply;
     if (!oob_client_reply_read(&buf, &reply))
@@ -304,8 +380,9 @@ oob_count_answered(const struct oob_probe_target *targets, const struct oob_prob
  * matches a probe we sent. Returns true if every sent probe has been answered. */
 static bool
 oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadline,
-                        const struct session_id *client_sid, const struct oob_probe_target *targets,
-                        struct oob_probe_result *results, int n, int outstanding)
+                        const struct session_id *client_sid, const struct tls_wrap_ctx *wrap,
+                        const struct oob_probe_target *targets, struct oob_probe_result *results, int n,
+                        int outstanding)
 {
     while (true)
     {
@@ -355,7 +432,7 @@ oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadli
                                     (struct sockaddr *)&from, &fromlen);
             if (len > 0)
             {
-                oob_probe_handle_reply(data, len, client_sid, &from, targets, results, n);
+                oob_probe_handle_reply(data, len, client_sid, wrap, &from, targets, results, n);
             }
         }
         if (oob_count_answered(targets, results, n) >= outstanding)
@@ -397,8 +474,8 @@ oob_probe_resend_unanswered(struct probe_ctx *pc, const struct buffer *probe,
  * once the window elapses or every sent probe has been answered. */
 static void
 oob_probe_collect(struct probe_ctx *pc, const struct buffer *probe,
-                  const struct session_id *client_sid, const struct oob_probe_target *targets,
-                  struct oob_probe_result *results, int n,
+                  const struct session_id *client_sid, const struct tls_wrap_ctx *wrap,
+                  const struct oob_probe_target *targets, struct oob_probe_result *results, int n,
                   const struct signal_info *sig)
 {
     /* number of probes we actually sent: stop early once they all answer */
@@ -423,7 +500,7 @@ oob_probe_collect(struct probe_ctx *pc, const struct buffer *probe,
             deadline.tv_usec -= 1000000;
         }
 
-        if (oob_probe_receive_slice(pc, &deadline, client_sid, targets, results, n, want)
+        if (oob_probe_receive_slice(pc, &deadline, client_sid, wrap, targets, results, n, want)
             || sig->signal_received)
         {
             return; /* all answered, or we are being told to stop */
@@ -466,6 +543,16 @@ client_probe_and_order_remotes(struct context *c)
 
     struct gc_arena gc = gc_new();
 
+    /* Wrapping context for the probe (tls-auth/tls-crypt, or plaintext if
+     * neither). NULL means this configuration cannot be probed; keep the
+     * configured order. */
+    struct tls_auth_standalone *tas = oob_probe_init_tls_auth_standalone(c, &gc);
+    if (!tas)
+    {
+        gc_free(&gc);
+        return;
+    }
+
     /* A single random session id identifies all of our probes; servers echo it
      * back in the reply's peer_session_id, letting us reject spoofed replies. */
     struct session_id client_sid;
@@ -487,11 +574,21 @@ client_probe_and_order_remotes(struct context *c)
             tmpl = ce;
             continue;
         }
+        const char *differs = NULL;
         if (!oob_probe_same_bind(tmpl, ce, &c->options))
         {
-            msg(D_LOW, "server-probe: %s:%s binds differently from %s:%s;"
+            differs = "binds";
+        }
+        else if (!oob_probe_same_wrap(tmpl, ce))
+        {
+            differs = "wraps the control channel";
+        }
+        if (differs)
+        {
+            msg(D_LOW, "server-probe: %s:%s %s differently from %s:%s;"
                        " not probing, using configured order",
-                ce->remote, ce->remote_port, tmpl->remote, tmpl->remote_port);
+                ce->remote, ce->remote_port, differs, tmpl->remote, tmpl->remote_port);
+            oob_probe_free_wrap(c, tas);
             gc_free(&gc);
             return;
         }
@@ -499,6 +596,7 @@ client_probe_and_order_remotes(struct context *c)
     if (!tmpl)
     {
         msg(D_LOW, "server-probe: no remote can be probed; using configured order");
+        oob_probe_free_wrap(c, tas);
         gc_free(&gc);
         return;
     }
@@ -507,17 +605,39 @@ client_probe_and_order_remotes(struct context *c)
     struct oob_probe_target *targets = gc_malloc(sizeof(*targets) * l->len, true, &gc);
     struct oob_probe_result *results = gc_malloc(sizeof(*results) * l->len, true, &gc);
 
-    struct buffer probe = alloc_buf_gc(256, &gc);
-    if (!oob_probe_build_packet(&probe, &client_sid))
+    /* Build the probe once and reuse the same bytes for every remote and for
+     * resends: the SERVER_PROBE payload is a single probe_parameter TLV, wrapped
+     * (or sent in plaintext) like any other control packet. The client session
+     * id is prepended as the sender session id. */
+    struct buffer payload = alloc_buf_gc(64, &gc);
+    const struct oob_probe_parameter param = {
+        .timestamp = (uint64_t)now,
+        .flags = 0,
+    };
+    if (!oob_server_probe_write(&payload, &param))
     {
-        msg(D_LOW, "server-probe: could not build probe packet; using configured order");
+        msg(D_LOW, "server-probe: could not build probe payload; using configured order");
         oob_probe_sockets_close(&pc);
+        oob_probe_free_wrap(c, tas);
         gc_free(&gc);
         return;
     }
 
-    msg(D_LOW, "server-probe: probing %d remote(s) with a %d ms window", l->len,
-        OOB_PROBE_WINDOW_MS);
+    struct buffer probe = tls_wrap_oob_standalone(&tas->tls_wrap, tas, &client_sid, &payload);
+    if (!BLEN(&probe))
+    {
+        msg(D_LOW, "server-probe: could not wrap probe packet; using configured order");
+        oob_probe_sockets_close(&pc);
+        oob_probe_free_wrap(c, tas);
+        gc_free(&gc);
+        return;
+    }
+
+    const char *wrap_name = (tas->tls_wrap.mode == TLS_WRAP_CRYPT)  ? "tls-crypt"
+                            : (tas->tls_wrap.mode == TLS_WRAP_AUTH) ? "tls-auth"
+                                                                    : "none (plaintext)";
+    msg(D_LOW, "server-probe: probing %d remote(s) with a %d ms window, control-channel wrapping: %s",
+        l->len, OOB_PROBE_WINDOW_MS, wrap_name);
 
     /* Resolve every remote first, so only the address families actually in use
      * get a probe socket. */
@@ -564,6 +684,7 @@ client_probe_and_order_remotes(struct context *c)
         {
             freeaddrinfo(bind_local);
         }
+        oob_probe_free_wrap(c, tas);
         gc_free(&gc);
         return;
     }
@@ -605,7 +726,7 @@ client_probe_and_order_remotes(struct context *c)
 
     if (sent_count > 0)
     {
-        oob_probe_collect(&pc, &probe, &client_sid, targets, results, l->len,
+        oob_probe_collect(&pc, &probe, &client_sid, &tas->tls_wrap, targets, results, l->len,
                           c->sig);
     }
     oob_probe_sockets_close(&pc);
@@ -653,5 +774,6 @@ client_probe_and_order_remotes(struct context *c)
     msg(M_INFO, "server-probe: %d of %d remote(s) answered; connecting best-first", responded,
         l->len);
 
+    oob_probe_free_wrap(c, tas);
     gc_free(&gc);
 }

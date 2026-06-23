@@ -617,20 +617,22 @@ configuration.
   compared on latency alone, so only the fastest server of its priority
   group is treated as best.
 
-  The probe is currently sent without control-channel wrapping, so it only
-  works against a server configured without ``--tls-auth``,
-  ``--tls-crypt`` or ``--tls-crypt-v2``.
+  The probe carries the same control-channel wrapping as a normal
+  connection (``--tls-auth`` or ``--tls-crypt``, when configured). With
+  ``--tls-crypt-v2`` the remotes are left in their configured order,
+  because the server cannot unwrap an out-of-band probe yet.
 
   Only UDP remotes are probed, and only when there are at least two
   remotes; remotes reached through a SOCKS proxy are not probed. All
   probed remotes must share the local bind settings (``--local``,
-  ``--lport``, ``--bind``) of the first one among them, since a single
-  socket per address family carries the probes; otherwise probing is
-  skipped and the configured order is used. Remotes that answered are tried first, in the
-  order described above; all other remotes, including TCP ones, follow in
-  their configured order. Probing runs once, before the first connection
-  attempt; a restart does not probe again. See ``--server-probe-reply``
-  for the server side.
+  ``--lport``, ``--bind``) and the control-channel key of the first one
+  among them, since a single socket per address family carries the
+  probes; otherwise probing is skipped and the configured order is used.
+  Remotes that answered are tried first, in the order described above;
+  all other remotes, including TCP ones, follow in their configured
+  order. Probing runs once, before the first connection attempt; a
+  restart does not probe again. See ``--server-probe-reply`` for the
+  server side.
 
 --static-challenge args
   Enable static challenge/response protocol
