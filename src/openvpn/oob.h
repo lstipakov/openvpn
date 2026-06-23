@@ -190,11 +190,12 @@ struct oob_probe_result
     struct oob_probe_reply reply; /* the values the server advertised */
 };
 
-/* Where the client probed one connection entry. */
+/* Where the client probed one connection entry: its resolved addresses. */
 struct oob_probe_target
 {
-    struct openvpn_sockaddr dest;
-    socklen_t destlen;
+    struct openvpn_sockaddr *dests;
+    socklen_t *destlens;
+    int n_dests;
     bool sent;
     struct timeval sent_at; /* when the probe was sent, for RTT measurement */
 };

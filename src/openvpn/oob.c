@@ -154,9 +154,16 @@ oob_probe_next_target_at(const struct openvpn_sockaddr *from, const struct oob_p
 {
     for (int i = start; i < n; i++)
     {
-        if (targets[i].sent && !results[i].responded && addr_port_match(from, &targets[i].dest))
+        if (!targets[i].sent || results[i].responded)
         {
-            return i;
+            continue;
+        }
+        for (int k = 0; k < targets[i].n_dests; k++)
+        {
+            if (addr_port_match(from, &targets[i].dests[k]))
+            {
+                return i;
+            }
         }
     }
     return -1;

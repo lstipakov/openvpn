@@ -302,6 +302,51 @@ oob_probe_sockets_close(struct probe_ctx *pc)
     }
 }
 
+/* Does any address of t have a probe socket of its family? */
+static bool
+oob_probe_target_reachable(const struct probe_ctx *pc, const struct oob_probe_target *t)
+{
+    for (int k = 0; k < t->n_dests; k++)
+    {
+        if (pc->sd[probe_af_index(t->dests[k].addr.sa.sa_family)] != SOCKET_UNDEFINED)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Send the probe to every resolved address of t, each on the socket matching
+ * its address family. An address an earlier entry already probed in this round
+ * is not probed again; that probe's reply covers this entry too. Returns true
+ * if at least one address was sent to or is already covered. */
+static bool
+oob_probe_send_target(struct probe_ctx *pc, const struct buffer *probe, const struct oob_probe_target *t)
+{
+    bool any_sent = false;
+    for (int k = 0; k < t->n_dests; k++)
+    {
+        socket_descriptor_t sd = pc->sd[probe_af_index(t->dests[k].addr.sa.sa_family)];
+        if (sd == SOCKET_UNDEFINED)
+        {
+            continue;
+        }
+        if (oob_addr_list_contains(pc->probed, pc->n_probed, &t->dests[k]))
+        {
+            any_sent = true;
+            continue;
+        }
+        if (sendto(sd, (const char *)BPTR(probe), (int)BLEN(probe), 0,
+                   (const struct sockaddr *)&t->dests[k], t->destlens[k])
+            >= 0)
+        {
+            pc->probed[pc->n_probed++] = t->dests[k];
+            any_sent = true;
+        }
+    }
+    return any_sent;
+}
+
 /* Parse one received datagram as a PROBE_REPLY and, if valid and matching one
  * of the probes we sent, record the reply in results. */
 static void
@@ -344,9 +389,10 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
         return;
     }
 
-    /* Credit the reply to every still-unanswered remote probed at its source
-     * address: several entries can resolve to the same address, and each takes
-     * the first reply for it. */
+    /* Credit the reply to every still-unanswered remote that was probed at its
+     * source address: several entries can resolve to the same address, and each
+     * takes the first reply for it. (A remote with several addresses may answer
+     * from more than one; the first one wins.) */
     struct timeval rcv;
     openvpn_gettimeofday(&rcv, NULL);
     int i = oob_probe_next_target_at(from, targets, results, n, 0);
@@ -451,18 +497,9 @@ oob_probe_resend_unanswered(struct probe_ctx *pc, const struct buffer *probe,
     pc->n_probed = 0; /* a new round: probe each unanswered address once again */
     for (int i = 0; i < n; i++)
     {
-        if (!targets[i].sent || results[i].responded
-            || oob_addr_list_contains(pc->probed, pc->n_probed, &targets[i].dest))
+        if (targets[i].sent && !results[i].responded)
         {
-            continue;
-        }
-        socket_descriptor_t sd = pc->sd[probe_af_index(targets[i].dest.addr.sa.sa_family)];
-        if (sd != SOCKET_UNDEFINED
-            && sendto(sd, (const char *)BPTR(probe), (int)BLEN(probe), 0,
-                      (const struct sockaddr *)&targets[i].dest, targets[i].destlen)
-                   >= 0)
-        {
-            pc->probed[pc->n_probed++] = targets[i].dest;
+            oob_probe_send_target(pc, probe, &targets[i]);
         }
     }
 }
@@ -668,11 +705,23 @@ client_probe_and_order_remotes(struct context *c)
             continue;
         }
 
-        /* Store the first resolved address natively (no IPv4-mapping); it is
-         * later probed on its family's socket. */
-        memcpy(&targets[i].dest, ai->ai_addr, ai->ai_addrlen);
-        targets[i].destlen = (socklen_t)ai->ai_addrlen;
-        need_af[probe_af_index(ai->ai_family)] = true;
+        /* Store every resolved address natively (no IPv4-mapping); each is later
+         * probed on its family's socket. */
+        struct oob_probe_target *t = &targets[i];
+        int n_addr = 0;
+        for (const struct addrinfo *a = ai; a; a = a->ai_next)
+        {
+            n_addr++;
+        }
+        t->dests = gc_malloc(sizeof(*t->dests) * n_addr, true, &gc);
+        t->destlens = gc_malloc(sizeof(*t->destlens) * n_addr, true, &gc);
+        for (const struct addrinfo *a = ai; a; a = a->ai_next)
+        {
+            memcpy(&t->dests[t->n_dests], a->ai_addr, a->ai_addrlen);
+            t->destlens[t->n_dests] = (socklen_t)a->ai_addrlen;
+            t->n_dests++;
+            need_af[probe_af_index(a->ai_family)] = true;
+        }
         freeaddrinfo(ai);
     }
 
@@ -689,38 +738,32 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
-    /* Send a probe to each resolved remote, on the socket of its address family.
-     * An address several entries resolve to is probed once; its reply is
-     * credited to each of them. */
-    pc.probed = gc_malloc(sizeof(*pc.probed) * l->len, false, &gc);
+    /* Send a probe to each resolved remote, on the socket of each address. */
+    int n_addrs = 0;
+    for (int i = 0; i < l->len; i++)
+    {
+        n_addrs += targets[i].n_dests;
+    }
+    pc.probed = gc_malloc(sizeof(*pc.probed) * n_addrs, false, &gc);
     pc.n_probed = 0;
 
     int sent_count = 0;
     for (int i = 0; i < l->len; i++)
     {
         const struct connection_entry *ce = l->array[i];
-        if (!targets[i].destlen)
+        struct oob_probe_target *t = &targets[i];
+        if (t->n_dests == 0 || !oob_probe_target_reachable(&pc, t))
         {
+            continue; /* nothing resolved, or its family is not probed */
+        }
+
+        if (!oob_probe_send_target(&pc, &probe, t))
+        {
+            msg(D_LOW, "server-probe: %s:%s: probe send failed", ce->remote, ce->remote_port);
             continue;
         }
-        socket_descriptor_t sd = pc.sd[probe_af_index(targets[i].dest.addr.sa.sa_family)];
-        if (sd == SOCKET_UNDEFINED)
-        {
-            continue; /* family not probed, see oob_probe_sockets_open() */
-        }
-        if (!oob_addr_list_contains(pc.probed, pc.n_probed, &targets[i].dest))
-        {
-            if (sendto(sd, (const char *)BPTR(&probe), (int)BLEN(&probe), 0,
-                       (struct sockaddr *)&targets[i].dest, targets[i].destlen)
-                < 0)
-            {
-                msg(D_LOW, "server-probe: %s:%s: probe send failed", ce->remote, ce->remote_port);
-                continue;
-            }
-            pc.probed[pc.n_probed++] = targets[i].dest;
-        }
-        openvpn_gettimeofday(&targets[i].sent_at, NULL);
-        targets[i].sent = true;
+        openvpn_gettimeofday(&t->sent_at, NULL);
+        t->sent = true;
         sent_count++;
     }
 
