@@ -616,9 +616,10 @@ configuration.
   answering server is used, falling back to a built-in default of
   :code:`10` ms.
 
-  The probe is currently sent without control-channel wrapping, so it only
-  works against a server configured without ``--tls-auth``,
-  ``--tls-crypt`` or ``--tls-crypt-v2``.
+  The probe carries the same control-channel wrapping as a normal
+  connection (``--tls-auth`` or ``--tls-crypt``, when configured). With
+  ``--tls-crypt-v2`` the remotes are left in their configured order,
+  because the server cannot unwrap an out-of-band probe yet.
 
   Only UDP remotes are probed; TCP remotes keep their configured
   position. Probing runs once, before the first connection attempt.
