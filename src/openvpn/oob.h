@@ -199,12 +199,13 @@ struct oob_probe_result
     struct oob_probe_reply reply; /* the values the server advertised */
 };
 
-/* Where the client probed one connection entry. */
+/* Where the client probed one connection entry: its resolved addresses. */
 struct oob_probe_target
 {
-    struct openvpn_sockaddr dest;
-    socklen_t destlen;
-    bool sent;
+    struct openvpn_sockaddr *dests;
+    socklen_t *destlens;
+    int n_dests;
+    bool sent; /* at least one address was probed */
 };
 
 /* One SERVER_PROBE transmission. Its message_id is its index in the list of

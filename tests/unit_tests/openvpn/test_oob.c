@@ -588,10 +588,12 @@ v4_addr(uint32_t addr, uint16_t port)
     return sa;
 }
 
+/* One probed address per entry. */
 static struct oob_probe_target
-probe_target(struct openvpn_sockaddr dest, bool sent)
+probe_target(struct openvpn_sockaddr *dest, bool sent)
 {
-    return (struct oob_probe_target){ .dest = dest, .destlen = sizeof(dest.addr.in4), .sent = sent };
+    static socklen_t len = sizeof(struct sockaddr_in);
+    return (struct oob_probe_target){ .dests = dest, .destlens = &len, .n_dests = 1, .sent = sent };
 }
 
 /* Two entries resolve to the same address. The first reply from it is
@@ -600,7 +602,7 @@ static void
 test_probe_reply_credits_every_entry_at_address(void **state)
 {
     struct openvpn_sockaddr a = v4_addr(0x7f000001, 1194);
-    struct oob_probe_target targets[2] = { probe_target(a, true), probe_target(a, true) };
+    struct oob_probe_target targets[2] = { probe_target(&a, true), probe_target(&a, true) };
     struct oob_probe_result results[2] = { 0 };
 
     int i = oob_probe_next_target_at(&a, targets, results, 2, 0);
@@ -624,9 +626,9 @@ test_probe_reply_matches_only_its_address(void **state)
     struct openvpn_sockaddr b = v4_addr(0x7f000002, 1194);
     struct openvpn_sockaddr a_other_port = v4_addr(0x7f000001, 1195);
     struct oob_probe_target targets[3] = {
-        probe_target(a, true),
-        probe_target(b, true),
-        probe_target(a, false), /* resolved but never sent */
+        probe_target(&a, true),
+        probe_target(&b, true),
+        probe_target(&a, false), /* resolved but never sent */
     };
     struct oob_probe_result results[3] = { 0 };
 
@@ -635,6 +637,21 @@ test_probe_reply_matches_only_its_address(void **state)
     assert_int_equal(oob_probe_next_target_at(&a, targets, results, 3, 0), 0);
     assert_int_equal(oob_probe_next_target_at(&a, targets, results, 3, 1), -1);
     assert_int_equal(oob_probe_next_target_at(&a_other_port, targets, results, 3, 0), -1);
+}
+
+/* A remote with several addresses is credited whichever of them answers. */
+static void
+test_probe_reply_matches_any_address_of_entry(void **state)
+{
+    struct openvpn_sockaddr addrs[2] = { v4_addr(0x7f000001, 1194), v4_addr(0x7f000002, 1194) };
+    socklen_t lens[2] = { sizeof(struct sockaddr_in), sizeof(struct sockaddr_in) };
+    struct oob_probe_target targets[1] = {
+        { .dests = addrs, .destlens = lens, .n_dests = 2, .sent = true },
+    };
+    struct oob_probe_result results[1] = { 0 };
+
+    assert_int_equal(oob_probe_next_target_at(&addrs[1], targets, results, 1, 0), 0);
+    assert_int_equal(oob_probe_next_target_at(&addrs[0], targets, results, 1, 0), 0);
 }
 
 /* The RTT of a reply is measured from the transmission its response_id names,
@@ -665,6 +682,31 @@ test_probe_rtt_from_answered_send(void **state)
     /* a clock that went backwards reads as 0, not as a huge value */
     rcv.tv_usec = 0;
     assert_int_equal(oob_probe_rtt_ms(sends, 3, 3, &a, &rcv), 0);
+}
+
+/* IPv6 addresses match on address and port too. */
+static void
+test_probe_addresses_ipv6(void **state)
+{
+    struct openvpn_sockaddr a = { 0 }, b = { 0 };
+    a.addr.in6.sin6_family = AF_INET6;
+    a.addr.in6.sin6_addr.s6_addr[15] = 1; /* ::1 */
+    a.addr.in6.sin6_port = htons(1194);
+    b = a;
+    b.addr.in6.sin6_port = htons(1195);
+    socklen_t len = sizeof(struct sockaddr_in6);
+    struct oob_probe_target targets[1] = {
+        { .dests = &a, .destlens = &len, .n_dests = 1, .sent = true },
+    };
+    struct oob_probe_result results[1] = { 0 };
+
+    assert_int_equal(oob_probe_next_target_at(&a, targets, results, 1, 0), 0);
+    assert_int_equal(oob_probe_next_target_at(&b, targets, results, 1, 0), -1);
+
+    const struct oob_probe_send sends[1] = { { .dest = a } };
+    const struct timeval rcv = { 0 };
+    assert_int_equal(oob_probe_rtt_ms(sends, 1, 1, &a, &rcv), 0);
+    assert_int_equal(oob_probe_rtt_ms(sends, 1, 1, &b, &rcv), -1);
 }
 
 /* A PROBE_REPLY carrying a probe_reply is found by the client scan, with all
@@ -1068,7 +1110,9 @@ run_oob_tests(void)
         cmocka_unit_test(test_server_probe_check_no_parameter),
         cmocka_unit_test(test_probe_reply_credits_every_entry_at_address),
         cmocka_unit_test(test_probe_reply_matches_only_its_address),
+        cmocka_unit_test(test_probe_reply_matches_any_address_of_entry),
         cmocka_unit_test(test_probe_rtt_from_answered_send),
+        cmocka_unit_test(test_probe_addresses_ipv6),
         cmocka_unit_test(test_client_reply_read_finds_reply),
         cmocka_unit_test(test_client_reply_read_skips_unknown),
         cmocka_unit_test(test_client_reply_read_rejects_unknown_mandatory),

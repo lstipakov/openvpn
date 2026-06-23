@@ -362,6 +362,55 @@ oob_probe_sockets_close(struct probe_ctx *pc)
     }
 }
 
+/* Does any address of t have a probe socket of its family? */
+static bool
+oob_probe_target_reachable(const struct probe_ctx *pc, const struct oob_probe_target *t)
+{
+    for (int k = 0; k < t->n_dests; k++)
+    {
+        if (pc->sd[probe_af_index(t->dests[k].addr.sa.sa_family)] != SOCKET_UNDEFINED)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Send a probe to every resolved address of t, each on the socket matching
+ * its address family. An address an earlier entry already probed in this round
+ * is not probed again; that probe's reply covers this entry too. Returns true
+ * if at least one address was sent to or is already covered. */
+static bool
+oob_probe_send_target(struct probe_ctx *pc, struct oob_probe_target *t)
+{
+    bool any_sent = false;
+    for (int k = 0; k < t->n_dests; k++)
+    {
+        const int af = probe_af_index(t->dests[k].addr.sa.sa_family);
+        socket_descriptor_t sd = pc->sd[af];
+        if (sd == SOCKET_UNDEFINED)
+        {
+            continue;
+        }
+#ifdef TARGET_ANDROID
+        /* Keep the probe out of an active tunnel, as the connection socket is.
+         * protect_fd_nonlocal() declines a local peer, so only a non-local one
+         * actually protects the socket and may latch the flag. */
+        if (!pc->fd_protected[af] && !addr_local(&t->dests[k].addr.sa))
+        {
+            protect_fd_nonlocal(sd, &t->dests[k].addr.sa);
+            pc->fd_protected[af] = true;
+        }
+#endif
+        if (oob_probe_sent_this_round(pc, &t->dests[k])
+            || oob_probe_send_to(pc, sd, &t->dests[k], t->destlens[k]))
+        {
+            any_sent = true;
+        }
+    }
+    return any_sent;
+}
+
 /* Parse one received datagram as a PROBE_REPLY and, if valid and answering one
  * of the probes we sent, record the reply in results. */
 static void
@@ -414,9 +463,10 @@ oob_probe_handle_reply(const struct probe_ctx *pc, uint8_t *data, int len,
         return; /* answers no probe we sent to that address */
     }
 
-    /* Credit the reply to every still-unanswered remote probed at its source
-     * address: several entries can resolve to the same address, and each takes
-     * the first reply for it. */
+    /* Credit the reply to every still-unanswered remote that was probed at its
+     * source address: several entries can resolve to the same address, and each
+     * takes the first reply for it. (A remote with several addresses may answer
+     * from more than one; the first one wins.) */
     int i = oob_probe_next_target_at(from, targets, results, n, 0);
     while (i >= 0)
     {
@@ -508,23 +558,18 @@ oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadli
 
 /* Resend the probe to every remote that we probed but that has not answered. */
 static void
-oob_probe_resend_unanswered(struct probe_ctx *pc, const struct oob_probe_target *targets,
+oob_probe_resend_unanswered(struct probe_ctx *pc, struct oob_probe_target *targets,
                             const struct oob_probe_result *results, int n)
 {
-    /* a new round: probe each unanswered address once again, with a new
-     * message_id */
+    /* A new round: every unanswered address is probed once more, with a new
+     * message_id. A late reply to an earlier round still counts, with the RTT
+     * of the transmission it answers. */
     pc->round_start = pc->n_sends;
     for (int i = 0; i < n; i++)
     {
-        if (!targets[i].sent || results[i].responded
-            || oob_probe_sent_this_round(pc, &targets[i].dest))
+        if (targets[i].sent && !results[i].responded)
         {
-            continue;
-        }
-        socket_descriptor_t sd = pc->sd[probe_af_index(targets[i].dest.addr.sa.sa_family)];
-        if (sd != SOCKET_UNDEFINED)
-        {
-            oob_probe_send_to(pc, sd, &targets[i].dest, targets[i].destlen);
+            oob_probe_send_target(pc, &targets[i]);
         }
     }
 }
@@ -535,7 +580,7 @@ oob_probe_resend_unanswered(struct probe_ctx *pc, const struct oob_probe_target 
  * each slice but the last we resend to whoever has not answered yet. Returns
  * once the window elapses or every sent probe has been answered. */
 static void
-oob_probe_collect(struct probe_ctx *pc, const struct oob_probe_target *targets,
+oob_probe_collect(struct probe_ctx *pc, struct oob_probe_target *targets,
                   struct oob_probe_result *results, int n, const struct signal_info *sig)
 {
     /* number of probes we actually sent: stop early once they all answer */
@@ -709,11 +754,23 @@ client_probe_and_order_remotes(struct context *c)
             continue;
         }
 
-        /* Store the first resolved address natively (no IPv4-mapping); it is
-         * later probed on its family's socket. */
-        memcpy(&targets[i].dest, ai->ai_addr, ai->ai_addrlen);
-        targets[i].destlen = (socklen_t)ai->ai_addrlen;
-        need_af[probe_af_index(ai->ai_family)] = true;
+        /* Store every resolved address natively (no IPv4-mapping); each is later
+         * probed on its family's socket. */
+        struct oob_probe_target *t = &targets[i];
+        int n_addr = 0;
+        for (const struct addrinfo *a = ai; a; a = a->ai_next)
+        {
+            n_addr++;
+        }
+        t->dests = gc_malloc(sizeof(*t->dests) * n_addr, true, &gc);
+        t->destlens = gc_malloc(sizeof(*t->destlens) * n_addr, true, &gc);
+        for (const struct addrinfo *a = ai; a; a = a->ai_next)
+        {
+            memcpy(&t->dests[t->n_dests], a->ai_addr, a->ai_addrlen);
+            t->destlens[t->n_dests] = (socklen_t)a->ai_addrlen;
+            t->n_dests++;
+            need_af[probe_af_index(a->ai_family)] = true;
+        }
         freeaddrinfo(ai);
     }
 
@@ -730,43 +787,32 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
-    /* Send a probe to each resolved remote, on the socket of its address family.
-     * An address several entries resolve to is probed once per round; its reply is
-     * credited to each of them. */
-    pc.max_sends = l->len * (1 + OOB_PROBE_RETRIES); /* each round probes an address once */
+    /* Send a probe to each resolved remote, on the socket of each address. */
+    int n_addrs = 0;
+    for (int i = 0; i < l->len; i++)
+    {
+        n_addrs += targets[i].n_dests;
+    }
+    /* Each round probes every address at most once. */
+    pc.max_sends = n_addrs * (1 + OOB_PROBE_RETRIES);
     pc.sends = gc_malloc(sizeof(*pc.sends) * pc.max_sends, true, &gc);
 
     int sent_count = 0;
     for (int i = 0; i < l->len; i++)
     {
         const struct connection_entry *ce = l->array[i];
-        if (!targets[i].destlen)
+        struct oob_probe_target *t = &targets[i];
+        if (t->n_dests == 0 || !oob_probe_target_reachable(&pc, t))
         {
-            continue;
+            continue; /* nothing resolved, or its family is not probed */
         }
-        const int af = probe_af_index(targets[i].dest.addr.sa.sa_family);
-        socket_descriptor_t sd = pc.sd[af];
-        if (sd == SOCKET_UNDEFINED)
-        {
-            continue; /* family not probed, see oob_probe_sockets_open() */
-        }
-#ifdef TARGET_ANDROID
-        /* Keep the probe out of an active tunnel, as the connection socket is.
-         * protect_fd_nonlocal() declines a local peer, so only a non-local one
-         * actually protects the socket and may latch the flag. */
-        if (!pc.fd_protected[af] && !addr_local(&targets[i].dest.addr.sa))
-        {
-            protect_fd_nonlocal(sd, &targets[i].dest.addr.sa);
-            pc.fd_protected[af] = true;
-        }
-#endif
-        if (!oob_probe_sent_this_round(&pc, &targets[i].dest)
-            && !oob_probe_send_to(&pc, sd, &targets[i].dest, targets[i].destlen))
+
+        if (!oob_probe_send_target(&pc, t))
         {
             msg(D_LOW, "server-probe: %s:%s: probe send failed", ce->remote, ce->remote_port);
             continue;
         }
-        targets[i].sent = true;
+        t->sent = true;
         sent_count++;
     }
 
