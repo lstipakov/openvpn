@@ -604,7 +604,7 @@ configuration.
      server-probe
      server-probe max-latency-diff
 
-  A small probe message is sent to the first resolved address of every UDP
+  A small probe message is sent to every resolved address of every UDP
   remote, and each answering server replies with its advertised priority
   and weight. Remotes are then reordered following DNS SRV (RFC 2782)
   semantics: servers that answered are tried before those that did not,
@@ -619,6 +619,10 @@ configuration.
   value of :code:`1000` or more makes every answering server of a
   priority group a candidate, since replies only arrive within the
   one-second probe window; the group is then ordered by weight alone.
+
+  The addresses of one remote are expected to be the same service and to
+  advertise the same values; the first of them to answer speaks for the
+  remote.
 
   The probe carries the same control-channel wrapping as a normal
   connection (``--tls-auth`` or ``--tls-crypt``, when configured). With
