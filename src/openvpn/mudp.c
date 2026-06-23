@@ -236,7 +236,11 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
          * tls-auth/tls-crypt wrapping). Answer it without creating a session. */
         struct oob_probe_reply reply;
         if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
-                                   &state->peer_session_id, &reply))
+                                   &state->peer_session_id,
+                                   (uint16_t)m->top.options.server_probe_reply_priority,
+                                   (uint16_t)m->top.options.server_probe_reply_weight,
+                                   (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
+                                   &reply))
         {
             /* malformed or replayed/stale probe: silently drop */
             return false;

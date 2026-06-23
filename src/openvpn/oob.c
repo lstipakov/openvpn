@@ -222,7 +222,8 @@ oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs)
 
 bool
 oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
-                      const struct session_id *peer_sid, struct oob_probe_reply *reply)
+                      const struct session_id *peer_sid, uint16_t priority, uint16_t weight,
+                      uint16_t max_latency_diff, struct oob_probe_reply *reply)
 {
     struct oob_probe_parameter param;
     if (!oob_server_probe_read(probe_payload, &param))
@@ -238,7 +239,10 @@ oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t windo
 
     memset(reply, 0, sizeof(*reply));
     reply->peer_session_id = *peer_sid;
-    /* priority/weight/connect_lifetime/flags left at 0 for now */
+    reply->priority = priority;
+    reply->weight = weight;
+    reply->max_latency_diff = max_latency_diff;
+    /* connect_lifetime/flags left at 0 for now */
     return true;
 }
 

@@ -285,7 +285,7 @@ test_timestamp_in_window(void **state)
 }
 
 /* A valid, in-window SERVER_PROBE yields a reply that echoes the peer's
- * session id and zeroes the remaining fields. */
+ * session id and carries the configured priority and weight. */
 static void
 test_build_probe_reply_valid(void **state)
 {
@@ -300,12 +300,13 @@ test_build_probe_reply_valid(void **state)
     memcpy(peer.id, "PEER1234", SID_SIZE);
 
     struct oob_probe_reply reply;
-    assert_true(oob_build_probe_reply(&buf, now, 30, &peer, &reply));
+    assert_true(oob_build_probe_reply(&buf, now, 30, &peer, 5, 50, 25, &reply));
     assert_memory_equal(reply.peer_session_id.id, peer.id, SID_SIZE);
-    assert_int_equal(reply.priority, 0);
-    assert_int_equal(reply.weight, 0);
+    assert_int_equal(reply.priority, 5);
+    assert_int_equal(reply.weight, 50);
     assert_int_equal(reply.connect_lifetime, 0);
     assert_int_equal(reply.flags, 0);
+    assert_int_equal(reply.max_latency_diff, 25);
 
     gc_free(&gc);
 }
@@ -323,7 +324,7 @@ test_build_probe_reply_stale(void **state)
 
     struct session_id peer = { 0 };
     struct oob_probe_reply reply;
-    assert_false(oob_build_probe_reply(&buf, now, 30, &peer, &reply));
+    assert_false(oob_build_probe_reply(&buf, now, 30, &peer, 0, 0, 0, &reply));
 
     gc_free(&gc);
 }
@@ -341,7 +342,7 @@ test_build_probe_reply_no_parameter(void **state)
 
     struct session_id peer = { 0 };
     struct oob_probe_reply reply;
-    assert_false(oob_build_probe_reply(&buf, 1000000, 30, &peer, &reply));
+    assert_false(oob_build_probe_reply(&buf, 1000000, 30, &peer, 0, 0, 0, &reply));
 
     gc_free(&gc);
 }

@@ -804,10 +804,14 @@ init_options(struct options *o)
     o->ce.proto = PROTO_UDP;
     o->ce.af = AF_UNSPEC;
 
-    /* The client latency margin is -1 = "not set": the client's value is
-     * authoritative when given, otherwise each server's advertised margin (or
-     * the built-in default) applies. */
+    /* server-probe defaults. The client latency margin is -1 = "not set": the
+     * client's value is authoritative when given, otherwise each server's
+     * advertised margin (or the built-in default) applies. An (unconfigured)
+     * server advertises weight 50 / priority 100 and no margin (0). */
     o->server_probe_latency_margin = -1;
+    o->server_probe_reply_weight = 50;
+    o->server_probe_reply_priority = 100;
+    o->server_probe_reply_max_latency_diff = 0;
     o->ce.bind_ipv6_only = false;
     o->ce.connect_retry_seconds = 1;
     o->ce.connect_retry_seconds_max = 300;
@@ -6525,6 +6529,26 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
             }
             options->server_probe_latency_margin = margin;
         }
+    }
+    else if (streq(p[0], "server-probe-reply") && !p[4])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        /* --server-probe-reply [max-latency-diff] [weight] [prio]; each optional */
+        int vals[3] = { options->server_probe_reply_max_latency_diff,
+                        options->server_probe_reply_weight,
+                        options->server_probe_reply_priority };
+        for (int i = 0; i < 3 && p[i + 1]; i++)
+        {
+            vals[i] = positive_atoi(p[i + 1], msglevel);
+            if (vals[i] > 0xffff)
+            {
+                msg(msglevel, "--server-probe-reply: values must be 0 to 65535");
+                goto err;
+            }
+        }
+        options->server_probe_reply_max_latency_diff = vals[0];
+        options->server_probe_reply_weight = vals[1];
+        options->server_probe_reply_priority = vals[2];
     }
     else if (streq(p[0], "nice") && p[1] && !p[2])
     {

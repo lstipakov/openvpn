@@ -339,6 +339,12 @@ struct options
     /* client: default candidate-band margin in ms (--server-probe [max-latency-diff]):
      * servers within this RTT of the fastest are treated as equally fast */
     int server_probe_latency_margin;
+    /* server: values advertised in the OOB PROBE_REPLY (--server-probe-reply).
+     * priority/weight follow DNS-SRV semantics; max_latency_diff overrides the
+     * client's margin for this server (0 = defer to the client). */
+    int server_probe_reply_priority;
+    int server_probe_reply_weight;
+    int server_probe_reply_max_latency_diff;
 
     bool mlock;
 

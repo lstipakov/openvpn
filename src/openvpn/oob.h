@@ -202,8 +202,8 @@ bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_se
  * answer it. Combines oob_server_probe_read() and oob_timestamp_in_window():
  * the probe is dropped (false returned) if it has no valid probe_parameter or
  * its timestamp is outside the acceptable window. On success @p reply is
- * populated with the peer's session id echoed back and the remaining fields
- * zeroed, ready to be wrapped and sent.
+ * populated with the peer's session id echoed back and the given priority and
+ * weight (other fields zeroed), ready to be wrapped and sent.
  *
  * This is the transport-agnostic decision step; the caller performs the send.
  *
@@ -211,11 +211,15 @@ bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_se
  * @param now            current time (UNIX seconds)
  * @param window_secs    acceptable timestamp skew, in either direction
  * @param peer_sid       session id of the requesting peer (echoed in the reply)
+ * @param priority       priority to advertise (DNS-SRV semantics; lower preferred)
+ * @param weight         weight to advertise (DNS-SRV semantics; higher preferred)
+ * @param max_latency_diff  candidate-band margin (ms) to advertise; 0 = defer to client
  * @param reply          filled with the reply to send on success
  * @return true if a reply should be sent, false to silently drop the probe
  */
 bool oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
-                           const struct session_id *peer_sid, struct oob_probe_reply *reply);
+                           const struct session_id *peer_sid, uint16_t priority, uint16_t weight,
+                           uint16_t max_latency_diff, struct oob_probe_reply *reply);
 
 /* Candidate-band margin (ms) used when neither the client nor the server
  * specifies one. */
