@@ -72,6 +72,7 @@ struct probe_ctx
     /* What each probe is built from; only the message_id differs. */
     struct tls_auth_standalone *tas;
     struct session_id *client_sid;
+    int opcode;
     struct oob_probe_parameter param;
 #ifdef TARGET_ANDROID
     bool fd_protected[PROBE_AF_COUNT]; /* VPNService protect(), once per socket */
@@ -89,22 +90,11 @@ probe_af_index(int af)
 /* Build the standalone wrapping context the probe is sent with, mirroring the
  * one the server answers it with, keyed like ce, the entry every other probed
  * remote was checked against; without tls-auth/tls-crypt it stays in
- * TLS_WRAP_NONE and the probe goes out in plaintext. Returns NULL (and logs)
- * for tls-crypt-v2, which the probe cannot carry yet. */
+ * TLS_WRAP_NONE and the probe goes out in plaintext. */
 static struct tls_auth_standalone *
 oob_probe_init_tls_auth_standalone(struct context *c, const struct connection_entry *ce,
                                    struct gc_arena *gc)
 {
-    /* tls-crypt-v2 wraps with a per-client key the server only learns from the
-     * wrapped client key (WKc) carried in the TLS handshake. An out-of-band
-     * probe carries no WKc, so the server cannot unwrap it; skip probing rather
-     * than send something unverifiable. */
-    if (ce->tls_crypt_v2_file)
-    {
-        msg(D_LOW, "server-probe: not supported with tls-crypt-v2; using configured order");
-        return NULL;
-    }
-
     /* options.ce is not mapped yet; options_postprocess_mutate_ce() has already
      * copied any global key into ce. Loaded again per-connection later. */
     do_init_tls_wrap_key(c, ce);
@@ -114,6 +104,14 @@ oob_probe_init_tls_auth_standalone(struct context *c, const struct connection_en
     init_tls_wrap_ctx(&to.tls_wrap, ce, c->options.tls_client, &c->c1.ks, &c->c1.pid_persist);
     to.replay_window = c->options.replay_window;
     to.replay_time = c->options.replay_time;
+
+    /* Attach our WKc so tls_wrap_control() appends it. Only a client has one;
+     * a server config's tls-crypt-v2 key leaves the probe in TLS_WRAP_NONE, so
+     * it must not be sent as P_CONTROL_OOB_WKC_V1. */
+    if (ce->tls_crypt_v2_file && c->options.tls_client)
+    {
+        to.tls_wrap.tls_crypt_v2_wkc = &c->c1.ks.tls_crypt_v2_wkc;
+    }
 
     struct tls_auth_standalone *tas = tls_auth_standalone_init(&to, gc);
 
@@ -133,6 +131,8 @@ oob_probe_free_wrap(struct context *c, struct tls_auth_standalone *tas)
     tls_auth_standalone_free(tas);
     free_key_ctx_bi(&c->c1.ks.tls_wrap_key);
     CLEAR(c->c1.ks.tls_wrap_key);
+    buf_clear(&c->c1.ks.tls_crypt_v2_wkc);
+    free_buf(&c->c1.ks.tls_crypt_v2_wkc);
     /* the raw key bytes too: do_init_crypto_tls_c1() may never load a key over
      * them, so they would otherwise stay resident for the process lifetime */
     secure_memzero(&c->c1.ks.original_wrap_keydata, sizeof(c->c1.ks.original_wrap_keydata));
@@ -151,7 +151,7 @@ oob_probe_build(struct probe_ctx *pc, uint32_t message_id, struct buffer *probe)
         return false;
     }
     *probe = tls_wrap_oob_standalone(&pc->tas->tls_wrap, pc->tas, pc->client_sid, &payload,
-                                     P_CONTROL_OOB_V1);
+                                     pc->opcode);
     return BLEN(probe) > 0;
 }
 
@@ -696,14 +696,8 @@ client_probe_and_order_remotes(struct context *c)
     }
 
     /* Wrapping context for the probe (tls-auth/tls-crypt, or plaintext if
-     * neither). NULL means this configuration cannot be probed; keep the
-     * configured order. */
+     * neither). */
     struct tls_auth_standalone *tas = oob_probe_init_tls_auth_standalone(c, tmpl, &gc);
-    if (!tas)
-    {
-        gc_free(&gc);
-        return;
-    }
 
     struct probe_ctx pc = { .sd = { SOCKET_UNDEFINED, SOCKET_UNDEFINED } };
     struct oob_probe_target *targets = gc_malloc(sizeof(*targets) * l->len, true, &gc);
@@ -712,17 +706,23 @@ client_probe_and_order_remotes(struct context *c)
     /* Every probe is a single probe_parameter TLV, wrapped (or sent in
      * plaintext) like any other control packet, with the client session id as
      * the sender session id. Each transmission is built on its own, as each
-     * carries its own message_id. */
+     * carries its own message_id. With tls-crypt-v2 the probe must carry the
+     * wrapped client key so the server can recover the per-client key; that is
+     * a P_CONTROL_OOB_WKC_V1 message. Otherwise (tls-crypt v1, tls-auth, or
+     * plaintext) it is a plain P_CONTROL_OOB_V1. */
+    const bool is_v2 = (tas->tls_wrap.tls_crypt_v2_wkc != NULL);
     pc.tas = tas;
     pc.client_sid = &client_sid;
+    pc.opcode = is_v2 ? P_CONTROL_OOB_WKC_V1 : P_CONTROL_OOB_V1;
     pc.param = (struct oob_probe_parameter){
         .timestamp = (uint64_t)now,
         .flags = 0,
     };
 
-    const char *wrap_name = (tas->tls_wrap.mode == TLS_WRAP_CRYPT)  ? "tls-crypt"
-                            : (tas->tls_wrap.mode == TLS_WRAP_AUTH) ? "tls-auth"
-                                                                    : "none (plaintext)";
+    const char *wrap_name = is_v2                                    ? "tls-crypt-v2"
+                            : (tas->tls_wrap.mode == TLS_WRAP_CRYPT) ? "tls-crypt"
+                            : (tas->tls_wrap.mode == TLS_WRAP_AUTH)  ? "tls-auth"
+                                                                     : "none (plaintext)";
     msg(D_LOW, "server-probe: probing %d remote(s) with a %d ms window, control-channel wrapping: %s",
         l->len, OOB_PROBE_WINDOW_MS, wrap_name);
 
