@@ -144,7 +144,8 @@ tls_wrap_control(struct tls_wrap_ctx *ctx, uint8_t header, struct buffer *buf,
         }
 
         if ((header >> P_OPCODE_SHIFT) == P_CONTROL_HARD_RESET_CLIENT_V3
-            || (header >> P_OPCODE_SHIFT) == P_CONTROL_WKC_V1)
+            || (header >> P_OPCODE_SHIFT) == P_CONTROL_WKC_V1
+            || (header >> P_OPCODE_SHIFT) == P_CONTROL_OOB_WKC_V1)
         {
             if (!buf_copy(&ctx->work, ctx->tls_crypt_v2_wkc))
             {
@@ -198,7 +199,8 @@ read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
     bool ret = false;
 
     const uint8_t opcode = *(BPTR(buf)) >> P_OPCODE_SHIFT;
-    if ((opcode == P_CONTROL_HARD_RESET_CLIENT_V3 || opcode == P_CONTROL_WKC_V1)
+    if ((opcode == P_CONTROL_HARD_RESET_CLIENT_V3 || opcode == P_CONTROL_WKC_V1
+         || opcode == P_CONTROL_OOB_WKC_V1)
         && !tls_crypt_v2_extract_client_key(buf, ctx, opt))
     {
         msg(D_TLS_ERRORS, "TLS Error: can not extract tls-crypt-v2 client key from %s",
@@ -389,9 +391,15 @@ tls_pre_decrypt_lite(const struct tls_auth_standalone *tas, struct tls_pre_decry
     {
         return VERDICT_VALID_WKC_V1;
     }
-    else if (opcode_is_oob(op))
+    else if (op == P_CONTROL_OOB_V1)
     {
         return VERDICT_VALID_OOB_V1;
+    }
+    else if (op == P_CONTROL_OOB_WKC_V1)
+    {
+        /* The WKc was unwrapped by read_control_auth() above, so the per-client
+         * key is already loaded into state->tls_wrap_tmp. */
+        return VERDICT_VALID_OOB_WKC_V1;
     }
     else
     {
@@ -449,8 +457,10 @@ tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
 
 struct buffer
 tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
-                        struct session_id *own_sid, const struct buffer *payload)
+                        struct session_id *own_sid, const struct buffer *payload, int opcode)
 {
+    ASSERT(opcode_is_oob(opcode));
+
     /* Copy buffer here to point at the same data but allow tls_wrap_control
      * to potentially change buf to point to another buffer without
      * modifying the buffer in tas */
@@ -461,10 +471,11 @@ tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *ta
      * or ACK fields. */
     ASSERT(buf_copy(&buf, payload));
 
-    uint8_t header = (uint8_t)(P_CONTROL_OOB_V1 << P_OPCODE_SHIFT);
+    uint8_t header = (uint8_t)(opcode << P_OPCODE_SHIFT);
 
     /* Add tls-auth/tls-crypt wrapping, this might replace buf with
-     * ctx->work */
+     * ctx->work. For P_CONTROL_OOB_WKC_V1 the wrapped client key is appended
+     * here too (tls-crypt-v2). */
     tls_wrap_control(ctx, header, &buf, own_sid);
 
     return buf;
