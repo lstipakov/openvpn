@@ -152,7 +152,8 @@ oob_probe_build(struct probe_ctx *pc, uint32_t request_id, struct buffer *probe)
     {
         return false;
     }
-    *probe = tls_wrap_oob_standalone(&pc->tas->tls_wrap, pc->tas, pc->client_sid, &payload);
+    *probe = tls_wrap_oob_standalone(&pc->tas->tls_wrap, pc->tas, pc->client_sid, &payload,
+                                     P_CONTROL_OOB_V1);
     return BLEN(probe) > 0;
 }
 
