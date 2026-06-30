@@ -80,9 +80,7 @@ probe_af_index(int af)
  * the tls_auth_standalone the server uses to answer it. With neither tls-auth
  * nor tls-crypt configured the context stays in TLS_WRAP_NONE and the probe is
  * sent in plaintext, exactly as before; with either configured the probe is
- * authenticated/encrypted like any other control packet. Returns NULL (and
- * logs) for configurations the probe cannot wrap yet, in which case the caller
- * skips probing and keeps the configured remote order. */
+ * authenticated/encrypted like any other control packet. */
 static struct tls_auth_standalone *
 oob_probe_init_tls_auth_standalone(struct context *c, struct gc_arena *gc)
 {
@@ -95,19 +93,9 @@ oob_probe_init_tls_auth_standalone(struct context *c, struct gc_arena *gc)
      * supported; the first entry's wrapping is used for all.) */
     const struct connection_entry *ce = c->options.connection_list->array[0];
 
-    /* tls-crypt-v2 wraps with a per-client key the server only learns from the
-     * wrapped client key (WKc) carried in the TLS handshake. An out-of-band
-     * probe carries no WKc, so the server cannot unwrap it; skip probing rather
-     * than send something unverifiable. */
-    if (ce->tls_crypt_v2_file)
-    {
-        msg(D_LOW, "server-probe: not supported with tls-crypt-v2; using configured order");
-        return NULL;
-    }
-
-    /* Load the tls-auth/tls-crypt key material into c->c1.ks (a no-op if neither
-     * is configured). This is run again per-connection later; calling it early
-     * here is harmless. */
+    /* Load the tls-auth/tls-crypt(-v2) key material into c->c1.ks (a no-op if
+     * none is configured). This is run again per-connection later; calling it
+     * early here is harmless. */
     do_init_tls_wrap_key(c, ce);
 
     struct tls_options to;
@@ -115,6 +103,15 @@ oob_probe_init_tls_auth_standalone(struct context *c, struct gc_arena *gc)
     init_tls_wrap_ctx(&to.tls_wrap, ce, c->options.tls_client, &c->c1.ks, &c->c1.pid_persist);
     to.replay_window = c->options.replay_window;
     to.replay_time = c->options.replay_time;
+
+    /* tls-crypt-v2 wraps with a per-client key the server learns from the
+     * wrapped client key (WKc). init_tls_wrap_ctx() loaded the per-client key
+     * into the wrap context; make the WKc available too so the probe can append
+     * it (as a P_CONTROL_OOB_WKC_V1 message), mirroring do_init_crypto_tls(). */
+    if (ce->tls_crypt_v2_file)
+    {
+        to.tls_wrap.tls_crypt_v2_wkc = &c->c1.ks.tls_crypt_v2_wkc;
+    }
 
     struct tls_auth_standalone *tas = tls_auth_standalone_init(&to, gc);
 
@@ -581,14 +578,8 @@ client_probe_and_order_remotes(struct context *c)
     struct gc_arena gc = gc_new();
 
     /* Wrapping context for the probe (tls-auth/tls-crypt, or plaintext if
-     * neither). NULL means this configuration cannot be probed; keep the
-     * configured order. */
+     * neither). */
     struct tls_auth_standalone *tas = oob_probe_init_tls_auth_standalone(c, &gc);
-    if (!tas)
-    {
-        gc_free(&gc);
-        return;
-    }
 
     /* A single random session id identifies all of our probes; servers echo it
      * back in the reply's peer_session_id, letting us reject spoofed replies. */
@@ -660,8 +651,15 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
+    /* With tls-crypt-v2 the probe must carry the wrapped client key so the
+     * server can recover the per-client key; that is a P_CONTROL_OOB_WKC_V1
+     * message. Otherwise (tls-crypt v1, tls-auth, or plaintext) it is a plain
+     * P_CONTROL_OOB_V1. */
+    const bool is_v2 = (tas->tls_wrap.tls_crypt_v2_wkc != NULL);
+    const int probe_opcode = is_v2 ? P_CONTROL_OOB_WKC_V1 : P_CONTROL_OOB_V1;
+
     struct buffer probe =
-        tls_wrap_oob_standalone(&tas->tls_wrap, tas, &client_sid, &payload, P_CONTROL_OOB_V1);
+        tls_wrap_oob_standalone(&tas->tls_wrap, tas, &client_sid, &payload, probe_opcode);
     if (!BLEN(&probe))
     {
         msg(D_LOW, "server-probe: could not wrap probe packet; using configured order");
@@ -671,9 +669,10 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
-    const char *wrap_name = (tas->tls_wrap.mode == TLS_WRAP_CRYPT)  ? "tls-crypt"
-                            : (tas->tls_wrap.mode == TLS_WRAP_AUTH) ? "tls-auth"
-                                                                    : "none (plaintext)";
+    const char *wrap_name = is_v2                                    ? "tls-crypt-v2"
+                            : (tas->tls_wrap.mode == TLS_WRAP_CRYPT) ? "tls-crypt"
+                            : (tas->tls_wrap.mode == TLS_WRAP_AUTH)  ? "tls-auth"
+                                                                     : "none (plaintext)";
     msg(D_LOW, "server-probe: probing %d remote(s) with a %d ms window, control-channel wrapping: %s",
         l->len, OOB_PROBE_WINDOW_MS, wrap_name);
 
