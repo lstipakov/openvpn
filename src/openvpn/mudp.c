@@ -109,7 +109,12 @@ send_probe_reply(struct multi_context *m, struct tls_pre_decrypt_state *state,
     reset_packet_id_send(&state->tls_wrap_tmp.opt.packet_id.send);
     state->tls_wrap_tmp.opt.packet_id.rec.initialized = true;
 
-    struct buffer buf = tls_wrap_oob_standalone(&state->tls_wrap_tmp, tas, own_sid, &payload);
+    /* The reply carries no WKc: with tls-crypt-v2 the server has already
+     * recovered the per-client key from the request's WKc (it is loaded into
+     * state->tls_wrap_tmp), so the reply is wrapped with that key as a plain
+     * P_CONTROL_OOB_V1 message. */
+    struct buffer buf =
+        tls_wrap_oob_standalone(&state->tls_wrap_tmp, tas, own_sid, &payload, P_CONTROL_OOB_V1);
     send_standalone_reply(m, &buf, "Server Probe", "Server probe from client, sending probe reply",
                           sock);
 
@@ -135,7 +140,7 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
     int handwindow = m->top.options.handshake_window;
 
     if (verdict == VERDICT_VALID_RESET_V3 || verdict == VERDICT_VALID_RESET_V2
-        || verdict == VERDICT_VALID_OOB_V1)
+        || verdict == VERDICT_VALID_OOB_V1 || verdict == VERDICT_VALID_OOB_WKC_V1)
     {
         /* Check if we are still below our limit for sending out
          * responses */
@@ -233,7 +238,7 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
 
         return ret;
     }
-    else if (verdict == VERDICT_VALID_OOB_V1)
+    else if (verdict == VERDICT_VALID_OOB_V1 || verdict == VERDICT_VALID_OOB_WKC_V1)
     {
         /* Out-of-band server probe. state->newbuf points at the TLV payload
          * (read_control_auth has stripped the opcode, session id and any
