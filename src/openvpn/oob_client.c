@@ -467,7 +467,8 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
-    struct buffer probe = tls_wrap_oob_standalone(&tas->tls_wrap, tas, &client_sid, &payload);
+    struct buffer probe =
+        tls_wrap_oob_standalone(&tas->tls_wrap, tas, &client_sid, &payload, P_CONTROL_OOB_V1);
     if (!BLEN(&probe))
     {
         msg(D_LOW, "server-probe: could not wrap probe packet; using configured order");
