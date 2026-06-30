@@ -617,9 +617,8 @@ configuration.
   :code:`10` ms.
 
   The probe carries the same control-channel wrapping as a normal
-  connection (``--tls-auth`` or ``--tls-crypt``, when configured). With
-  ``--tls-crypt-v2`` the remotes are left in their configured order,
-  because the server cannot unwrap an out-of-band probe yet.
+  connection (``--tls-auth``, ``--tls-crypt`` or ``--tls-crypt-v2``,
+  when configured).
 
   Only UDP remotes are probed; TCP remotes keep their configured
   position. Probing runs once, before the first connection attempt.
