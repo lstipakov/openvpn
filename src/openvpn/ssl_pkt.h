@@ -64,17 +64,25 @@
  * do_pre_decrypt_check(), never handled by tls_pre_decrypt(). */
 #define P_CONTROL_OOB_V1 12
 
+/* Variant of P_CONTROL_OOB_V1 with an appended wrapped client key (WKc), like
+ * P_CONTROL_HARD_RESET_CLIENT_V3 / P_CONTROL_WKC_V1. Used when tls-crypt-v2 is
+ * configured: an out-of-band message belongs to no established session, so the
+ * client must carry the WKc for the server to recover the per-client key and
+ * unwrap the message. See doc/tls-crypt-v2.txt and the openvpn-rfc wire
+ * protocol (CONTROL_OOB_WKC_V1). */
+#define P_CONTROL_OOB_WKC_V1 13
+
 /* define the range of defined opcodes, in- and out-of-band
  * Since we do no longer support key-method 1 we consider
  * the v1 op codes invalid */
 #define P_FIRST_OPCODE 3
-#define P_LAST_OPCODE  12
+#define P_LAST_OPCODE  13
 
 /* Is op one of the out-of-band opcodes? */
 static inline bool
 opcode_is_oob(int op)
 {
-    return op == P_CONTROL_OOB_V1;
+    return op == P_CONTROL_OOB_V1 || op == P_CONTROL_OOB_WKC_V1;
 }
 
 /*
@@ -110,6 +118,8 @@ enum first_packet_verdict
     /** This packet is a valid out-of-band control message (e.g. a server
      * probe). It does not belong to a session and must not create one. */
     VERDICT_VALID_OOB_V1,
+    /** as VERDICT_VALID_OOB_V1, with a wrapped client key appended (tls-crypt-v2) */
+    VERDICT_VALID_OOB_WKC_V1,
     /** the packet failed on of the various checks */
     VERDICT_INVALID
 };
@@ -240,10 +250,14 @@ struct buffer tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_sta
  * @param tas       standalone auth context providing the work buffer
  * @param own_sid   session id to use as our session id in the header
  * @param payload   the OOB message (header and TLVs) to wrap
+ * @param opcode    the OOB opcode to use: P_CONTROL_OOB_V1, or
+ *                  P_CONTROL_OOB_WKC_V1 to append the tls-crypt-v2 wrapped
+ *                  client key (the context must then carry it).
  * @return          the wrapped packet buffer, ready to send
  */
 struct buffer tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
-                                      struct session_id *own_sid, const struct buffer *payload);
+                                      struct session_id *own_sid, const struct buffer *payload,
+                                      int opcode);
 
 
 /**
@@ -289,6 +303,9 @@ packet_opcode_name(int op)
 
         case P_CONTROL_OOB_V1:
             return "P_CONTROL_OOB_V1";
+
+        case P_CONTROL_OOB_WKC_V1:
+            return "P_CONTROL_OOB_WKC_V1";
 
         case P_ACK_V1:
             return "P_ACK_V1";
