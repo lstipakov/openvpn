@@ -327,6 +327,7 @@ function(add_library_deps target)
     elseif (${WOLFSSL})
         pkg_search_module(wolfssl wolfssl REQUIRED)
         target_link_libraries(${target} PUBLIC ${wolfssl_LINK_LIBRARIES})
+        target_include_directories(${target} PRIVATE ${wolfssl_INCLUDE_DIRS})
         target_include_directories(${target} PRIVATE ${wolfssl_INCLUDE_DIRS}/wolfssl)
     else ()
         find_package(OpenSSL REQUIRED)
@@ -367,6 +368,7 @@ if (${MBED})
 elseif (${WOLFSSL})
     set(ENABLE_CRYPTO_OPENSSL YES)
     set(ENABLE_CRYPTO_WOLFSSL YES)
+    set(EXTERNAL_OPTS_OPENVPN YES)
 else ()
     set(ENABLE_CRYPTO_OPENSSL YES)
 endif ()
@@ -383,12 +385,20 @@ if (BUILD_TESTING)
     find_package(cmocka CONFIG)
     if (TARGET cmocka::cmocka)
         set(CMOCKA_LIBRARIES cmocka::cmocka)
+        get_target_property(CMOCKA_INCLUDE_DIRS cmocka::cmocka INTERFACE_INCLUDE_DIRECTORIES)
     else ()
         pkg_search_module(cmocka cmocka REQUIRED IMPORTED_TARGET)
         set(CMOCKA_LIBRARIES PkgConfig::cmocka)
+        set(CMOCKA_INCLUDE_DIRS ${cmocka_INCLUDE_DIRS})
     endif ()
-    set(CMAKE_REQUIRED_LIBRARIES ${CMOCKA_LIBRARIES})
+    # cmocka_version.h exists since cmocka 2.0; its absence selects the
+    # cmocka 1.x compat shims in test_common.h. Detecting a header only needs
+    # the include path - do NOT add cmocka to CMAKE_REQUIRED_LIBRARIES, as that
+    # makes check_include_files link the shared library, which can fail in the
+    # probe for unrelated reasons and wrongly mis-detect cmocka 2.x as < 2.0.
+    set(CMAKE_REQUIRED_INCLUDES ${CMOCKA_INCLUDE_DIRS})
     check_include_files(cmocka_version.h HAVE_CMOCKA_VERSION_H)
+    unset(CMAKE_REQUIRED_INCLUDES)
 endif ()
 
 configure_file(config.h.cmake.in config.h)
@@ -508,6 +518,10 @@ set(SOURCE_FILES
     src/openvpn/multi_io.c
     src/openvpn/occ.c
     src/openvpn/occ.h
+    src/openvpn/oob.c
+    src/openvpn/oob.h
+    src/openvpn/oob_client.c
+    src/openvpn/oob_client.h
     src/openvpn/openvpn.c
     src/openvpn/openvpn.h
     src/openvpn/openvpn_win32_resources.rc
@@ -655,6 +669,7 @@ if (BUILD_TESTING)
         "test_mbuf"
         "test_misc"
         "test_ncp"
+        "test_oob"
         "test_options_parse"
         "test_packet_id"
         "test_pkt"
@@ -842,6 +857,12 @@ if (BUILD_TESTING)
         src/openvpn/otime.c
         src/openvpn/packet_id.c
         src/openvpn/reliable.c
+        src/openvpn/session_id.c
+        )
+
+    target_sources(test_oob PRIVATE
+        tests/unit_tests/openvpn/mock_get_random.c
+        src/openvpn/oob.c
         src/openvpn/session_id.c
         )
 

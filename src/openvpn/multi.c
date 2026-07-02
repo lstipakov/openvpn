@@ -228,11 +228,11 @@ reap_buckets_per_pass(uint32_t n_buckets)
 
 #ifdef ENABLE_MANAGEMENT
 
-static uint32_t
+static uint64_t
 cid_hash_function(const void *key, uint32_t iv)
 {
     const unsigned long *k = (const unsigned long *)key;
-    return (uint32_t)*k;
+    return (uint64_t)*k;
 }
 
 static bool
@@ -246,19 +246,19 @@ cid_compare_function(const void *key1, const void *key2)
 #endif
 
 #ifdef ENABLE_ASYNC_PUSH
-static uint32_t
+static uint64_t
 /*
  * inotify watcher descriptors are used as hash value
  */
 int_hash_function(const void *key, uint32_t iv)
 {
-    return (uint32_t)(uintptr_t)key;
+    return (uintptr_t)key;
 }
 
 static bool
 int_compare_function(const void *key1, const void *key2)
 {
-    return (unsigned long)key1 == (unsigned long)key2;
+    return (uintptr_t)key1 == (uintptr_t)key2;
 }
 #endif
 
@@ -1012,7 +1012,7 @@ multi_learn_addr(struct multi_context *m, struct multi_instance *mi, const struc
                  const unsigned int flags)
 {
     struct hash_element *he;
-    const uint32_t hv = hash_value(m->vhash, addr);
+    const uint64_t hv = hash_value(m->vhash, addr);
     struct hash_bucket *bucket = hash_bucket(m->vhash, hv);
     struct multi_route *oldroute = NULL;
     struct multi_instance *owner = NULL;
@@ -3094,7 +3094,7 @@ multi_process_float(struct multi_context *m, struct multi_instance *mi, struct l
         goto done;
     }
 
-    const uint32_t hv = hash_value(hash, &real);
+    const uint64_t hv = hash_value(hash, &real);
     struct hash_bucket *bucket = hash_bucket(hash, hv);
 
     /* make sure that we don't float to an address taken by another client */
@@ -3306,8 +3306,6 @@ bool
 multi_process_incoming_link(struct multi_context *m, struct multi_instance *instance,
                             const unsigned int mpp_flags, struct link_socket *sock)
 {
-    struct gc_arena gc = gc_new();
-
     struct context *c;
     struct mroute_addr src, dest;
     unsigned int mroute_flags;
@@ -3332,167 +3330,171 @@ multi_process_incoming_link(struct multi_context *m, struct multi_instance *inst
         multi_set_pending(m, instance);
     }
 
-    if (m->pending)
+    if (!m->pending)
     {
-        set_prefix(m->pending);
+        return true;
+    }
+    set_prefix(m->pending);
 
-        /* get instance context */
-        c = &m->pending->context;
+    /* get instance context */
+    c = &m->pending->context;
 
-        if (!instance)
+    if (!instance)
+    {
+        /* transfer packet pointer from top-level context buffer to instance */
+        c->c2.buf = m->top.c2.buf;
+
+        /* transfer from-addr from top-level context buffer to instance */
+        if (!floated)
         {
-            /* transfer packet pointer from top-level context buffer to instance */
-            c->c2.buf = m->top.c2.buf;
+            c->c2.from = m->top.c2.from;
+        }
+    }
 
-            /* transfer from-addr from top-level context buffer to instance */
-            if (!floated)
+    if (BLEN(&c->c2.buf) > 0)
+    {
+        struct link_socket_info *lsi;
+        const uint8_t *orig_buf;
+
+        /* decrypt in instance context */
+
+        lsi = &sock->info;
+        orig_buf = c->c2.buf.data;
+        if (process_incoming_link_part1(c, lsi, floated))
+        {
+            /* nonzero length means that we have a valid, decrypted packed */
+            if (floated && c->c2.buf.len > 0)
             {
-                c->c2.from = m->top.c2.from;
+                multi_process_float(m, m->pending, sock);
             }
+
+            process_incoming_link_part2(c, lsi, orig_buf);
         }
 
-        if (BLEN(&c->c2.buf) > 0)
+        if (TUNNEL_TYPE(m->top.c1.tuntap) == DEV_TYPE_TUN)
         {
-            struct link_socket_info *lsi;
-            const uint8_t *orig_buf;
+            /* extract packet source and dest addresses */
+            mroute_flags =
+                mroute_extract_addr_from_packet(&src, &dest, 0, &c->c2.to_tun, DEV_TYPE_TUN);
 
-            /* decrypt in instance context */
-
-            lsi = &sock->info;
-            orig_buf = c->c2.buf.data;
-            if (process_incoming_link_part1(c, lsi, floated))
+            /* drop packet if extract failed */
+            if (!(mroute_flags & MROUTE_EXTRACT_SUCCEEDED))
             {
-                /* nonzero length means that we have a valid, decrypted packed */
-                if (floated && c->c2.buf.len > 0)
-                {
-                    multi_process_float(m, m->pending, sock);
-                }
-
-                process_incoming_link_part2(c, lsi, orig_buf);
+                c->c2.to_tun.len = 0;
             }
-
-            if (TUNNEL_TYPE(m->top.c1.tuntap) == DEV_TYPE_TUN)
+            /* make sure that source address is associated with this client */
+            else if (multi_get_instance_by_virtual_addr(m, &src, true) != m->pending)
             {
-                /* extract packet source and dest addresses */
-                mroute_flags =
-                    mroute_extract_addr_from_packet(&src, &dest, 0, &c->c2.to_tun, DEV_TYPE_TUN);
-
-                /* drop packet if extract failed */
-                if (!(mroute_flags & MROUTE_EXTRACT_SUCCEEDED))
+                /* IPv6 link-local address (fe80::xxx)? */
+                if ((src.type & MR_ADDR_MASK) == MR_ADDR_IPV6
+                    && IN6_IS_ADDR_LINKLOCAL(&src.v6.addr))
                 {
-                    c->c2.to_tun.len = 0;
+                    /* do nothing, for now.  TODO: add address learning */
                 }
-                /* make sure that source address is associated with this client */
-                else if (multi_get_instance_by_virtual_addr(m, &src, true) != m->pending)
+                else
                 {
-                    /* IPv6 link-local address (fe80::xxx)? */
-                    if ((src.type & MR_ADDR_MASK) == MR_ADDR_IPV6
-                        && IN6_IS_ADDR_LINKLOCAL(&src.v6.addr))
-                    {
-                        /* do nothing, for now.  TODO: add address learning */
-                    }
-                    else
-                    {
-                        msg(D_MULTI_DROPPED,
-                            "MULTI: bad source address from client [%s], packet dropped",
-                            mroute_addr_print(&src, &gc));
-                    }
-                    c->c2.to_tun.len = 0;
+                    struct gc_arena gc = gc_new();
+                    msg(D_MULTI_DROPPED,
+                        "MULTI: bad source address from client [%s], packet dropped",
+                        mroute_addr_print(&src, &gc));
+                    gc_free(&gc);
                 }
-                /* client-to-client communication enabled? */
-                else if (m->enable_c2c)
+                c->c2.to_tun.len = 0;
+            }
+            /* client-to-client communication enabled? */
+            else if (m->enable_c2c)
+            {
+                /* multicast? */
+                if (mroute_flags & MROUTE_EXTRACT_MCAST)
                 {
-                    /* multicast? */
-                    if (mroute_flags & MROUTE_EXTRACT_MCAST)
-                    {
-                        /* for now, treat multicast as broadcast */
-                        multi_bcast(m, &c->c2.to_tun, m->pending, 0);
-                    }
-                    else /* possible client to client routing */
-                    {
-                        ASSERT(!(mroute_flags & MROUTE_EXTRACT_BCAST));
-                        mi = multi_get_instance_by_virtual_addr(m, &dest, true);
+                    /* for now, treat multicast as broadcast */
+                    multi_bcast(m, &c->c2.to_tun, m->pending, 0);
+                }
+                else /* possible client to client routing */
+                {
+                    ASSERT(!(mroute_flags & MROUTE_EXTRACT_BCAST));
+                    mi = multi_get_instance_by_virtual_addr(m, &dest, true);
 
-                        /* if dest addr is a known client, route to it */
-                        if (mi)
+                    /* if dest addr is a known client, route to it */
+                    if (mi)
+                    {
                         {
+                            multi_unicast(m, &c->c2.to_tun, mi);
+                            register_activity(c, BLEN(&c->c2.to_tun));
+                        }
+                        c->c2.to_tun.len = 0;
+                    }
+                }
+            }
+        }
+        else if (TUNNEL_TYPE(m->top.c1.tuntap) == DEV_TYPE_TAP)
+        {
+            uint16_t vid = 0;
+
+            if (m->top.options.vlan_tagging)
+            {
+                if (vlan_is_tagged(&c->c2.to_tun))
+                {
+                    /* Drop VLAN-tagged frame. */
+                    msg(D_VLAN_DEBUG, "dropping incoming VLAN-tagged frame");
+                    c->c2.to_tun.len = 0;
+                }
+                else
+                {
+                    vid = c->options.vlan_pvid;
+                }
+            }
+            /* extract packet source and dest addresses */
+            mroute_flags =
+                mroute_extract_addr_from_packet(&src, &dest, vid, &c->c2.to_tun, DEV_TYPE_TAP);
+
+            if (mroute_flags & MROUTE_EXTRACT_SUCCEEDED)
+            {
+                if (multi_learn_addr(m, m->pending, &src, 0) == m->pending)
+                {
+                    /* check for broadcast */
+                    if (m->enable_c2c)
+                    {
+                        if (mroute_flags & (MROUTE_EXTRACT_BCAST | MROUTE_EXTRACT_MCAST))
+                        {
+                            multi_bcast(m, &c->c2.to_tun, m->pending, vid);
+                        }
+                        else /* try client-to-client routing */
+                        {
+                            mi = multi_get_instance_by_virtual_addr(m, &dest, false);
+
+                            /* if dest addr is a known client, route to it */
+                            if (mi)
                             {
                                 multi_unicast(m, &c->c2.to_tun, mi);
                                 register_activity(c, BLEN(&c->c2.to_tun));
-                            }
-                            c->c2.to_tun.len = 0;
-                        }
-                    }
-                }
-            }
-            else if (TUNNEL_TYPE(m->top.c1.tuntap) == DEV_TYPE_TAP)
-            {
-                uint16_t vid = 0;
-
-                if (m->top.options.vlan_tagging)
-                {
-                    if (vlan_is_tagged(&c->c2.to_tun))
-                    {
-                        /* Drop VLAN-tagged frame. */
-                        msg(D_VLAN_DEBUG, "dropping incoming VLAN-tagged frame");
-                        c->c2.to_tun.len = 0;
-                    }
-                    else
-                    {
-                        vid = c->options.vlan_pvid;
-                    }
-                }
-                /* extract packet source and dest addresses */
-                mroute_flags =
-                    mroute_extract_addr_from_packet(&src, &dest, vid, &c->c2.to_tun, DEV_TYPE_TAP);
-
-                if (mroute_flags & MROUTE_EXTRACT_SUCCEEDED)
-                {
-                    if (multi_learn_addr(m, m->pending, &src, 0) == m->pending)
-                    {
-                        /* check for broadcast */
-                        if (m->enable_c2c)
-                        {
-                            if (mroute_flags & (MROUTE_EXTRACT_BCAST | MROUTE_EXTRACT_MCAST))
-                            {
-                                multi_bcast(m, &c->c2.to_tun, m->pending, vid);
-                            }
-                            else /* try client-to-client routing */
-                            {
-                                mi = multi_get_instance_by_virtual_addr(m, &dest, false);
-
-                                /* if dest addr is a known client, route to it */
-                                if (mi)
-                                {
-                                    multi_unicast(m, &c->c2.to_tun, mi);
-                                    register_activity(c, BLEN(&c->c2.to_tun));
-                                    c->c2.to_tun.len = 0;
-                                }
+                                c->c2.to_tun.len = 0;
                             }
                         }
-                    }
-                    else
-                    {
-                        msg(D_MULTI_DROPPED,
-                            "MULTI: bad source address from client [%s], packet dropped",
-                            mroute_addr_print(&src, &gc));
-                        c->c2.to_tun.len = 0;
                     }
                 }
                 else
                 {
+                    struct gc_arena gc = gc_new();
+                    msg(D_MULTI_DROPPED,
+                        "MULTI: bad source address from client [%s], packet dropped",
+                        mroute_addr_print(&src, &gc));
                     c->c2.to_tun.len = 0;
+                    gc_free(&gc);
                 }
             }
+            else
+            {
+                c->c2.to_tun.len = 0;
+            }
         }
-
-        /* postprocess and set wakeup */
-        ret = multi_process_post(m, m->pending, mpp_flags);
-
-        clear_prefix();
     }
 
-    gc_free(&gc);
+    /* postprocess and set wakeup */
+    ret = multi_process_post(m, m->pending, mpp_flags);
+
+    clear_prefix();
+
     return ret;
 }
 
@@ -3534,7 +3536,6 @@ multi_process_incoming_tun(struct multi_context *m, const unsigned int mpp_flags
          * Route an incoming tun/tap packet to
          * the appropriate multi_instance object.
          */
-
         mroute_flags = mroute_extract_addr_from_packet(&src, &dest, vid, &m->top.c2.buf, dev_type);
 
         if (mroute_flags & MROUTE_EXTRACT_SUCCEEDED)
@@ -4229,7 +4230,7 @@ static void
 multi_unlearn_addr(struct multi_context *m, struct multi_instance *mi, const struct mroute_addr *addr)
 {
     struct hash_element *he;
-    const uint32_t hv = hash_value(m->vhash, addr);
+    const uint64_t hv = hash_value(m->vhash, addr);
     struct hash_bucket *bucket = hash_bucket(m->vhash, hv);
     struct multi_route *r = NULL;
 

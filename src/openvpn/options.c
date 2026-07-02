@@ -803,6 +803,15 @@ init_options(struct options *o)
     o->topology = TOP_UNDEF;
     o->ce.proto = PROTO_UDP;
     o->ce.af = AF_UNSPEC;
+
+    /* server-probe defaults. The client latency margin is -1 = "not set": the
+     * client's value is authoritative when given, otherwise each server's
+     * advertised margin (or the built-in default) applies. An (unconfigured)
+     * server advertises weight 50 / priority 100 and no margin (0). */
+    o->server_probe_latency_margin = -1;
+    o->server_probe_reply_weight = 50;
+    o->server_probe_reply_priority = 100;
+    o->server_probe_reply_max_latency_diff = 0;
     o->ce.bind_ipv6_only = false;
     o->ce.connect_retry_seconds = 1;
     o->ce.connect_retry_seconds_max = 300;
@@ -1531,7 +1540,18 @@ show_http_proxy_options(const struct http_proxy_options *o)
 void
 options_detach(struct options *o)
 {
+    /* The options struct carries two gc_arena's (one generic and one specific
+     * to the DNS settings), which the by-value options
+     * copy in inherit_context_child()/inherit_context_top() shares with the
+     * source.
+     *
+     * Detach both (i.e. re-initialize them), otherwise child's call of
+     * gc_free() (or context teardown) would free allocations the source
+     * context still references, leading to a use-after-free (and subsequent
+     * double-free).
+     */
     gc_detach(&o->gc);
+    gc_detach(&o->dns_options.gc);
     o->routes = NULL;
     o->client_nat = NULL;
     clone_push_list(o);
@@ -6494,6 +6514,41 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
     {
         VERIFY_PERMISSION(OPT_P_GENERAL);
         options->mtu_test = true;
+    }
+    else if (streq(p[0], "server-probe") && !p[2])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        options->server_probe = true;
+        if (p[1])
+        {
+            int margin = positive_atoi(p[1], msglevel);
+            if (margin > 0xffff)
+            {
+                msg(msglevel, "--server-probe: max-latency-diff must be 0 to 65535 ms");
+                goto err;
+            }
+            options->server_probe_latency_margin = margin;
+        }
+    }
+    else if (streq(p[0], "server-probe-reply") && !p[4])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        /* --server-probe-reply [max-latency-diff] [weight] [prio]; each optional */
+        int vals[3] = { options->server_probe_reply_max_latency_diff,
+                        options->server_probe_reply_weight,
+                        options->server_probe_reply_priority };
+        for (int i = 0; i < 3 && p[i + 1]; i++)
+        {
+            vals[i] = positive_atoi(p[i + 1], msglevel);
+            if (vals[i] > 0xffff)
+            {
+                msg(msglevel, "--server-probe-reply: values must be 0 to 65535");
+                goto err;
+            }
+        }
+        options->server_probe_reply_max_latency_diff = vals[0];
+        options->server_probe_reply_weight = vals[1];
+        options->server_probe_reply_priority = vals[2];
     }
     else if (streq(p[0], "nice") && p[1] && !p[2])
     {

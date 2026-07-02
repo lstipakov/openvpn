@@ -58,6 +58,27 @@
  * like P_CONTROL_HARD_RESET_CLIENT_V3 */
 #define P_CONTROL_WKC_V1 11
 
+/* Out-of-band control message that does not belong to an established
+ * control channel session (e.g. a server probe). Inherently unreliable:
+ * there is no protocol-level retransmission.
+ *
+ * On the server this is accepted via the tls_pre_decrypt_lite() allowlist and
+ * handled in the new-connection path (it never creates a session). It is
+ * deliberately still excluded from the P_FIRST_OPCODE..P_LAST_OPCODE range
+ * that gates the established-session tls_pre_decrypt(): that range is widened
+ * to 12 only together with the established-session/client OOB receive handler,
+ * otherwise an OOB packet arriving on an existing session would be misparsed
+ * as a control packet. */
+#define P_CONTROL_OOB_V1 12
+
+/* Variant of P_CONTROL_OOB_V1 with an appended wrapped client key (WKc), like
+ * P_CONTROL_HARD_RESET_CLIENT_V3 / P_CONTROL_WKC_V1. Used when tls-crypt-v2 is
+ * configured: an out-of-band message belongs to no established session, so the
+ * client must carry the WKc for the server to recover the per-client key and
+ * unwrap the message. See doc/tls-crypt-v2.txt and the openvpn-rfc wire
+ * protocol (CONTROL_OOB_WKC_V1). */
+#define P_CONTROL_OOB_WKC_V1 13
+
 /* define the range of legal opcodes
  * Since we do no longer support key-method 1 we consider
  * the v1 op codes invalid */
@@ -94,6 +115,9 @@ enum first_packet_verdict
     VERDICT_VALID_ACK_V1,
     /** The packet is a valid control packet with appended wrapped client key */
     VERDICT_VALID_WKC_V1,
+    /** This packet is a valid out-of-band control message (e.g. a server
+     * probe). It does not belong to a session and must not create one. */
+    VERDICT_VALID_OOB_V1,
     /** the packet failed on of the various checks */
     VERDICT_INVALID
 };
@@ -224,6 +248,25 @@ struct buffer tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_sta
                                    struct session_id *own_sid, struct session_id *remote_sid,
                                    uint8_t header, bool request_resend_wkc);
 
+/**
+ * Wrap an already-built out-of-band payload (e.g. probe-reply TLVs) into a
+ * standalone, session-less P_CONTROL_OOB_V1 packet: it prepends the opcode and
+ * @p own_sid and applies the same tls-auth/tls-crypt wrapping as a regular
+ * control packet, but carries no reliability/ACK fields.
+ *
+ * @param ctx       tls wrapping context (from the pre-decrypt state)
+ * @param tas       standalone auth context providing the work buffer
+ * @param own_sid   session id to use as our session id in the header
+ * @param payload   the OOB message payload (TLV stream) to wrap
+ * @param opcode    the OOB opcode to use: P_CONTROL_OOB_V1, or
+ *                  P_CONTROL_OOB_WKC_V1 to append the tls-crypt-v2 wrapped
+ *                  client key (the context must then carry it).
+ * @return          the wrapped packet buffer, ready to send
+ */
+struct buffer tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
+                                      struct session_id *own_sid, const struct buffer *payload,
+                                      int opcode);
+
 
 /**
  * Extracts a control channel message from buf and adjusts the size of
@@ -265,6 +308,9 @@ packet_opcode_name(int op)
 
         case P_CONTROL_WKC_V1:
             return "P_CONTROL_WKC_V1";
+
+        case P_CONTROL_OOB_V1:
+            return "P_CONTROL_OOB_V1";
 
         case P_ACK_V1:
             return "P_ACK_V1";

@@ -32,10 +32,43 @@
 
 #include "memdbg.h"
 #include "ssl_pkt.h"
+#include "oob.h"
 
 #ifdef HAVE_SYS_INOTIFY_H
 #include <sys/inotify.h>
 #endif
+
+/* Send an already-built standalone control packet back to the peer that just
+ * contacted us (c2.from), synchronously and without keeping any state.
+ *
+ * We do not want to keep state for a reply to an initial/out-of-band packet, so
+ * we send it without queueing. If we hit EAGAIN on a busy socket the packet is
+ * lost and the client simply retries -- an acceptable compromise that avoids
+ * consuming server resources under attack.
+ *
+ * @param buf     the packet to send (built by a tls_*_standalone() helper)
+ * @param prefix  msg() prefix to set for the duration of the send
+ * @param detail  D_MULTI_DEBUG message describing the reply
+ */
+static void
+send_standalone_reply(struct multi_context *m, struct buffer *buf, const char *prefix,
+                      const char *detail, struct link_socket *sock)
+{
+    struct context *c = &m->top;
+
+    /* dco-win server requires prepend with sockaddr, so preserve offset */
+    ASSERT(buf_init(&c->c2.buffers->aux_buf, buf->offset));
+    buf_copy(&c->c2.buffers->aux_buf, buf);
+
+    msg_set_prefix(prefix);
+    c->c2.to_link = c->c2.buffers->aux_buf;
+    c->c2.to_link_addr = &c->c2.from;
+    msg(D_MULTI_DEBUG, "%s", detail);
+    process_outgoing_link(c, sock);
+    c->c2.to_link.len = 0;
+    c->c2.to_link_addr = NULL;
+    msg_set_prefix(NULL);
+}
 
 static void
 send_hmac_reset_packet(struct multi_context *m, struct tls_pre_decrypt_state *state,
@@ -48,29 +81,41 @@ send_hmac_reset_packet(struct multi_context *m, struct tls_pre_decrypt_state *st
     struct buffer buf = tls_reset_standalone(&state->tls_wrap_tmp, tas, sid,
                                              &state->peer_session_id, header, request_resend_wkc);
 
-    struct context *c = &m->top;
+    send_standalone_reply(m, &buf, "Connection Attempt",
+                          "Reset packet from client, sending HMAC based reset challenge", sock);
+}
 
-    /* dco-win server requires prepend with sockaddr, so preserve offset */
-    ASSERT(buf_init(&c->c2.buffers->aux_buf, buf.offset));
+/* Send an out-of-band PROBE_REPLY back to the source of a SERVER_PROBE,
+ * synchronously and without keeping any state, mirroring the reset path. */
+static void
+send_probe_reply(struct multi_context *m, struct tls_pre_decrypt_state *state,
+                 struct tls_auth_standalone *tas, const struct oob_probe_reply *reply,
+                 struct session_id *own_sid, struct link_socket *sock)
+{
+    struct gc_arena gc = gc_new();
 
-    buf_copy(&c->c2.buffers->aux_buf, &buf);
+    /* Build the payload of the reply (message-type header + probe_reply TLV) */
+    struct buffer payload = alloc_buf_gc(128, &gc);
+    if (!oob_client_reply_write(&payload, reply))
+    {
+        gc_free(&gc);
+        return;
+    }
 
-    /*
-     * We do not want to keep any state here, so we send the reply to the
-     * initial packet synchronously without queueing anything.
-     *
-     * If we hit EAGAIN on a busy socket, the packet will be lost and the
-     * client will have to retransmit its HARD_RESET. This is considered an
-     * acceptable compromise to avoid consuming server resources under attack.
-     */
-    msg_set_prefix("Connection Attempt");
-    c->c2.to_link = c->c2.buffers->aux_buf;
-    c->c2.to_link_addr = &c->c2.from;
-    msg(D_MULTI_DEBUG, "Reset packet from client, sending HMAC based reset challenge");
-    process_outgoing_link(c, sock);
-    c->c2.to_link.len = 0;
-    c->c2.to_link_addr = NULL;
-    msg_set_prefix(NULL);
+    /* OOB replies use the same control-channel wrapping as the request */
+    reset_packet_id_send(&state->tls_wrap_tmp.opt.packet_id.send);
+    state->tls_wrap_tmp.opt.packet_id.rec.initialized = true;
+
+    /* The reply carries no WKc: with tls-crypt-v2 the server has already
+     * recovered the per-client key from the request's WKc (it is loaded into
+     * state->tls_wrap_tmp), so the reply is wrapped with that key as a plain
+     * P_CONTROL_OOB_V1 message. */
+    struct buffer buf =
+        tls_wrap_oob_standalone(&state->tls_wrap_tmp, tas, own_sid, &payload, P_CONTROL_OOB_V1);
+    send_standalone_reply(m, &buf, "Server Probe", "Server probe from client, sending probe reply",
+                          sock);
+
+    gc_free(&gc);
 }
 
 
@@ -189,17 +234,123 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
 
         return ret;
     }
+    else if (verdict == VERDICT_VALID_OOB_V1)
+    {
+        /* Out-of-band server probe. state->newbuf points at the TLV payload
+         * (read_control_auth has stripped the opcode, session id and any
+         * tls-auth/tls-crypt wrapping). Answer it without creating a session. */
+        struct oob_probe_reply reply;
+        if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
+                                   &state->peer_session_id,
+                                   (uint16_t)m->top.options.server_probe_reply_priority,
+                                   (uint16_t)m->top.options.server_probe_reply_weight,
+                                   (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
+                                   &reply))
+        {
+            /* malformed or replayed/stale probe: silently drop */
+            return false;
+        }
+
+        /* Rate-limit replies, as the reset path does, so an unauthenticated
+         * probe flood (no tls-auth/tls-crypt) cannot use us as a reflector. */
+        if (!reflect_filter_rate_limit_check(m->initial_rate_limiter))
+        {
+            return false;
+        }
+
+        /* Our session id is a stateless SYN cookie (the same HMAC the three-way
+         * handshake uses): we keep no per-probe state, and the reply can later
+         * also serve as the server's CONTROL_HARD_RESET_SERVER_V2, letting a
+         * client skip the first two handshake messages (the connect_lifetime
+         * shortcut). */
+        struct session_id sid =
+            calculate_session_id_hmac(state->peer_session_id, from, hmac, handwindow, 0);
+
+        send_probe_reply(m, state, tas, &reply, &sid, sock);
+
+        /* An OOB probe never creates a session */
+        return false;
+    }
 
     /* VERDICT_INVALID */
     return false;
 }
 
-/*
+/**
+ * Handles a packet if no existing session exists for this incoming packet.
+ *
+ * It will either send a reply with a hmac cookie if this is the first
+ * packet of a three-way handshake or create a multi_instance if it is a
+ * packet that completes the three-way handshake.
+ */
+static struct multi_instance *
+handle_connection_attempt(struct multi_context *m,
+                          struct link_socket *sock,
+                          struct mroute_addr *real,
+                          const uint64_t hv,
+                          struct hash_bucket *bucket)
+{
+    struct hash *hash = m->hash;
+    struct tls_pre_decrypt_state state = { 0 };
+    struct multi_instance *mi = NULL;
+    struct gc_arena gc = gc_new();
+
+    if (m->deferred_shutdown_signal.signal_received)
+    {
+        msg(D_MULTI_ERRORS,
+            "MULTI: Connection attempt from %s ignored while server is "
+            "shutting down",
+            mroute_addr_print(real, &gc));
+    }
+    else if (do_pre_decrypt_check(m, &state, *real, sock))
+    {
+        /* This is an unknown session but with valid tls-auth/tls-crypt
+         * (or no auth at all).  If this is the initial packet of a
+         * session, we just send a reply with a HMAC session id and
+         * do not generate a session slot */
+
+        if (frequency_limit_event_allowed(m->new_connection_limiter))
+        {
+            /* a successful three-way handshake only counts against
+             * connect-freq but not against connect-freq-initial */
+            reflect_filter_rate_limit_decrease(m->initial_rate_limiter);
+
+            mi = multi_create_instance(m, real, sock);
+            if (mi)
+            {
+                hash_add_fast(hash, bucket, &mi->real, hv, mi);
+                mi->did_real_hash = true;
+                multi_assign_peer_id(m, mi);
+
+                /* If we have a session id already, ensure that the
+                 * state is using the same */
+                if (session_id_defined(&state.server_session_id)
+                    && session_id_defined((&state.peer_session_id)))
+                {
+                    mi->context.c2.tls_multi->n_sessions++;
+                    struct tls_session *session =
+                        &mi->context.c2.tls_multi->session[TM_INITIAL];
+                    session_skip_to_pre_start(session, &state, &m->top.c2.from);
+                }
+            }
+        }
+        else
+        {
+            msg(D_MULTI_ERRORS,
+                "MULTI: Connection from %s would exceed new connection frequency limit as controlled by --connect-freq",
+                mroute_addr_print(real, &gc));
+        }
+    }
+    free_tls_pre_decrypt_state(&state);
+    gc_free(&gc);
+    return mi;
+}
+
+/**
  * Get a client instance based on real address.  If
  * the instance doesn't exist, create it while
  * maintaining real address hash table atomicity.
  */
-
 struct multi_instance *
 multi_get_create_instance_udp(struct multi_context *m, bool *floated, struct link_socket *sock)
 {
@@ -212,7 +363,7 @@ multi_get_create_instance_udp(struct multi_context *m, bool *floated, struct lin
     if (mroute_extract_openvpn_sockaddr(&real, &m->top.c2.from.dest, true) && m->top.c2.buf.len > 0)
     {
         struct hash_element *he;
-        const uint32_t hv = hash_value(hash, &real);
+        const uint64_t hv = hash_value(hash, &real);
         struct hash_bucket *bucket = hash_bucket(hash, hv);
         uint8_t *ptr = BPTR(&m->top.c2.buf);
         uint8_t op = ptr[0] >> P_OPCODE_SHIFT;
@@ -258,54 +409,7 @@ multi_get_create_instance_udp(struct multi_context *m, bool *floated, struct lin
         /* we have no existing multi instance for this connection */
         if (!mi)
         {
-            struct tls_pre_decrypt_state state = { 0 };
-            if (m->deferred_shutdown_signal.signal_received)
-            {
-                msg(D_MULTI_ERRORS,
-                    "MULTI: Connection attempt from %s ignored while server is "
-                    "shutting down",
-                    mroute_addr_print(&real, &gc));
-            }
-            else if (do_pre_decrypt_check(m, &state, real, sock))
-            {
-                /* This is an unknown session but with valid tls-auth/tls-crypt
-                 * (or no auth at all).  If this is the initial packet of a
-                 * session, we just send a reply with a HMAC session id and
-                 * do not generate a session slot */
-
-                if (frequency_limit_event_allowed(m->new_connection_limiter))
-                {
-                    /* a successful three-way handshake only counts against
-                     * connect-freq but not against connect-freq-initial */
-                    reflect_filter_rate_limit_decrease(m->initial_rate_limiter);
-
-                    mi = multi_create_instance(m, &real, sock);
-                    if (mi)
-                    {
-                        hash_add_fast(hash, bucket, &mi->real, hv, mi);
-                        mi->did_real_hash = true;
-                        multi_assign_peer_id(m, mi);
-
-                        /* If we have a session id already, ensure that the
-                         * state is using the same */
-                        if (session_id_defined(&state.server_session_id)
-                            && session_id_defined((&state.peer_session_id)))
-                        {
-                            mi->context.c2.tls_multi->n_sessions++;
-                            struct tls_session *session =
-                                &mi->context.c2.tls_multi->session[TM_INITIAL];
-                            session_skip_to_pre_start(session, &state, &m->top.c2.from);
-                        }
-                    }
-                }
-                else
-                {
-                    msg(D_MULTI_ERRORS,
-                        "MULTI: Connection from %s would exceed new connection frequency limit as controlled by --connect-freq",
-                        mroute_addr_print(&real, &gc));
-                }
-            }
-            free_tls_pre_decrypt_state(&state);
+            mi = handle_connection_attempt(m, sock, &real, hv, bucket);
         }
 
 #ifdef ENABLE_DEBUG

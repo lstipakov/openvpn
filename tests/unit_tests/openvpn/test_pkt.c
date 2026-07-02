@@ -712,6 +712,125 @@ test_generate_reset_packet_tls_auth(void **ut_state)
     free_tas(&tas_server);
 }
 
+/* A matching tls-crypt-v2 server/client key pair (the client key's WKc was
+ * wrapped with this server key), reused from the tls-crypt-v2 unit tests. */
+static const char *oob_v2_server_key =
+    "-----BEGIN OpenVPN tls-crypt-v2 server key-----\n"
+    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v\n"
+    "MDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5f\n"
+    "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8=\n"
+    "-----END OpenVPN tls-crypt-v2 server key-----\n";
+
+static const char *oob_v2_client_key =
+    "-----BEGIN OpenVPN tls-crypt-v2 client key-----\n"
+    "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8gISIjJCUmJygpKissLS4v\n"
+    "MDEyMzQ1Njc4OTo7PD0+P0BBQkNERUZHSElKS0xNTk9QUVJTVFVWV1hZWltcXV5f\n"
+    "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn+AgYKDhIWGh4iJiouMjY6P\n"
+    "kJGSk5SVlpeYmZqbnJ2en6ChoqOkpaanqKmqq6ytrq+wsbKztLW2t7i5uru8vb6/\n"
+    "wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX2Nna29zd3t/g4eLj5OXm5+jp6uvs7e7v\n"
+    "8PHy8/T19vf4+fr7/P3+/xd9pcB0qUYZsWvkrLcfGmzPJPM8a7r0mEWdXwbDadSV\n"
+    "LHg5bv2TwlmPR3HgaMr8o9LTh9hxUTkrH3S0PfKRNwcso86ua/dBFTyXsM9tg4aw\n"
+    "3dS6ogH9AkaT+kRRDgNcKWkQCbwmJK2JlfkXHBwbAtmn78AkNuho6QCFqCdqGab3\n"
+    "zh2vheFqGMPdGpukbFrT3rcO3VLxUeG+RdzXiMTCpJSovFBP1lDkYwYJPnz6daEh\n"
+    "j0TzJ3BVru9W3CpotdNt7u09knxAfpCxjtrP3semsDew/gTBtcfQ/OoTFyFHnN5k\n"
+    "RZ+q17SC4nba3Pp8/Fs0+hSbv2tJozoD8SElFq7SIWJsciTYh8q8f5yQxjdt4Wxu\n"
+    "/Z5wtPCAZ0tOzj4ItTI77fBOYRTfEayzHgEr\n"
+    "-----END OpenVPN tls-crypt-v2 client key-----\n";
+
+/* End-to-end check of the tls-crypt-v2 out-of-band probe: the client wraps an
+ * OOB payload as a P_CONTROL_OOB_WKC_V1 message (the payload encrypted with the
+ * per-client key Kc, with the wrapped client key WKc appended), and the server's
+ * stateless first-packet path (tls_pre_decrypt_lite) recovers Kc from the WKc,
+ * decrypts the payload, and returns VERDICT_VALID_OOB_V1. */
+static void
+test_oob_wkc_v1_roundtrip(void **ut_state)
+{
+    now = 0x5f000000;
+
+    struct frame frame = { .buf = { .headroom = 200, .payload_size = 1400 }, 0 };
+
+    /* ---- Client: wrap an OOB probe as P_CONTROL_OOB_WKC_V1 (WKc appended) ---- */
+    struct tls_auth_standalone tas_client = { 0 };
+    tas_client.frame = frame;
+    tas_client.tls_wrap.mode = TLS_WRAP_CRYPT;
+    tas_client.tls_wrap.opt.flags |= (CO_IGNORE_PACKET_ID | CO_PACKET_ID_LONG_FORM);
+    packet_id_init(&tas_client.tls_wrap.opt.packet_id, 0, 0, "UT-CLIENT", 0);
+    tas_client.workbuf = alloc_buf(1600);
+    tas_client.tls_wrap.work = alloc_buf(1600);
+
+    /* Load Kc and obtain the WKc, exactly as a tls-crypt-v2 client does. */
+    struct buffer wkc = { 0 };
+    tls_crypt_v2_init_client_key(&tas_client.tls_wrap.opt.key_ctx_bi,
+                                 &tas_client.tls_wrap.original_wrap_keydata, &wkc, oob_v2_client_key,
+                                 true);
+    tas_client.tls_wrap.tls_crypt_v2_wkc = &wkc;
+
+    const uint8_t payload_bytes[] = { 0x01, 0x00, 0x02, 0x00, 0x0c, 0xde,
+                                      0xad, 0xbe, 0xef, 0x00, 0x11, 0x22 };
+    struct buffer payload = alloc_buf(64);
+    buf_write(&payload, payload_bytes, sizeof(payload_bytes));
+
+    struct session_id client_sid = { { 1, 2, 3, 4, 5, 6, 7, 8 } };
+    reset_packet_id_send(&tas_client.tls_wrap.opt.packet_id.send);
+
+    struct buffer probe = tls_wrap_oob_standalone(&tas_client.tls_wrap, &tas_client, &client_sid,
+                                                  &payload, P_CONTROL_OOB_WKC_V1);
+    assert_true(BLEN(&probe) > 0);
+    assert_int_equal((BPTR(&probe))[0] >> P_OPCODE_SHIFT, P_CONTROL_OOB_WKC_V1);
+
+    /* ---- Server: stateless path recovers Kc from the WKc and decrypts ---- */
+    struct tls_auth_standalone tas_server = { 0 };
+    tas_server.frame = frame;
+    /* No static wrapping, only a tls-crypt-v2 server key (as a v2 server runs). */
+    tas_server.tls_wrap.mode = TLS_WRAP_NONE;
+    tas_server.tls_wrap.opt.flags |= (CO_IGNORE_PACKET_ID | CO_PACKET_ID_LONG_FORM);
+    packet_id_init(&tas_server.tls_wrap.opt.packet_id, 0, 0, "UT-SERVER", 0);
+    tls_crypt_v2_init_server_key(&tas_server.tls_wrap.tls_crypt_v2_server_key, true, oob_v2_server_key,
+                                 true);
+    tas_server.workbuf = alloc_buf(1600);
+
+    struct link_socket_actual from = { 0 };
+    struct buffer srv = alloc_buf(1600);
+    buf_write(&srv, BPTR(&probe), BLEN(&probe));
+
+    struct tls_pre_decrypt_state state = { 0 };
+    enum first_packet_verdict verdict = tls_pre_decrypt_lite(&tas_server, &state, &from, &srv);
+    assert_int_equal(verdict, VERDICT_VALID_OOB_V1);
+
+    /* The decrypted payload must equal what the client sent, and the client's
+     * session id must be recovered. */
+    assert_int_equal(BLEN(&state.newbuf), (int)sizeof(payload_bytes));
+    assert_memory_equal(BPTR(&state.newbuf), payload_bytes, sizeof(payload_bytes));
+    assert_memory_equal(state.peer_session_id.id, client_sid.id, SID_SIZE);
+    free_tls_pre_decrypt_state(&state);
+
+    /* Flipping any single byte (header, session id, ciphertext or WKc) must make
+     * the probe fail to validate. */
+    for (size_t i = 0; i < (size_t)BLEN(&probe); i++)
+    {
+        struct tls_pre_decrypt_state tstate = { 0 };
+        buf_reset_len(&srv);
+        buf_write(&srv, BPTR(&probe), BLEN(&probe));
+        (BPTR(&srv))[i] ^= 0xff;
+        enum first_packet_verdict v = tls_pre_decrypt_lite(&tas_server, &tstate, &from, &srv);
+        assert_int_equal(v, VERDICT_INVALID);
+        free_tls_pre_decrypt_state(&tstate);
+    }
+
+    free_key_ctx_bi(&tas_client.tls_wrap.opt.key_ctx_bi);
+    packet_id_free(&tas_client.tls_wrap.opt.packet_id);
+    free_buf(&wkc);
+    free_buf(&payload);
+    free_buf(&tas_client.workbuf);
+    free_buf(&tas_client.tls_wrap.work);
+
+    free_key_ctx(&tas_server.tls_wrap.tls_crypt_v2_server_key);
+    packet_id_free(&tas_server.tls_wrap.opt.packet_id);
+    free_buf(&tas_server.workbuf);
+
+    free_buf(&srv);
+}
+
 static void
 test_extract_control_message(void **ut_state)
 {
@@ -762,6 +881,7 @@ main(void)
         cmocka_unit_test(test_verify_hmac_none_out_of_range_ack),
         cmocka_unit_test(test_generate_reset_packet_plain),
         cmocka_unit_test(test_generate_reset_packet_tls_auth),
+        cmocka_unit_test(test_oob_wkc_v1_roundtrip),
         cmocka_unit_test(test_extract_control_message)
     };
 
