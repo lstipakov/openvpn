@@ -1428,6 +1428,41 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
         /* inherit (possibly guessed) info AF from parent context */
         sock->info.af = c->c2.accept_from->info.af;
     }
+    else if (mode == LS_MODE_UDP_ADOPT)
+    {
+        /* Adopt the OOB probe socket: same source IP+port the server's cookie is
+         * bound to. It is already bound, so do not bind again. */
+        ASSERT(c->c2.oob_probe_sd != SOCKET_UNDEFINED);
+        sock->sd = c->c2.oob_probe_sd;
+        c->c2.oob_probe_sd = SOCKET_UNDEFINED; /* ownership moves to the link socket */
+        sock->info.af = c->c2.oob_probe_remote.addr.sa.sa_family;
+        sock->bind_local = false;
+
+        /* The probe socket was created plainly, so apply the same options
+         * create_socket() would (it is already bound, so no bind here).
+         * --multihome's IP_PKTINFO never applies to a probing client, so it is
+         * intentionally not set. */
+        sock->sockflags |= SF_GETADDRINFO_DGRAM;
+        socket_set_buffers(sock->sd, &sock->socket_buffer_sizes, true);
+        socket_set_mark(sock->sd, sock->mark);
+#if defined(TARGET_LINUX)
+        if (sock->bind_dev)
+        {
+            msg(M_INFO, "Using bind-dev %s", sock->bind_dev);
+            if (setsockopt(sock->sd, SOL_SOCKET, SO_BINDTODEVICE, sock->bind_dev,
+                           strlen(sock->bind_dev) + 1)
+                != 0)
+            {
+                msg(M_WARN | M_ERRNO, "WARN: setsockopt SO_BINDTODEVICE=%s failed", sock->bind_dev);
+            }
+        }
+#endif
+
+        /* Pin the exact address we probed so the connection targets the address
+         * the cookie was minted for; resolve_remote() preserves a defined actual. */
+        CLEAR(sock->info.lsa->actual);
+        sock->info.lsa->actual.dest = c->c2.oob_probe_remote;
+    }
 
     /* are we running in HTTP proxy mode? */
     if (sock->http_proxy)
@@ -1720,7 +1755,7 @@ link_socket_init_phase2(struct context *c, struct link_socket *sock)
         goto done;
     }
 #endif
-    if (sock->info.lsa->current_remote)
+    if (sock->mode != LS_MODE_UDP_ADOPT && sock->info.lsa->current_remote)
     {
         create_socket(sock, sock->info.lsa->current_remote);
     }
