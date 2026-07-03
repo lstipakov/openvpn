@@ -660,7 +660,16 @@ configuration.
   - the server honours its reply only for a limited time (see
     ``--server-probe-reply``), so an unusually slow start-up, such as a
     private key passphrase or token prompt, can outlast it; the client
-    then falls back to a normal handshake.
+    then falls back to a normal handshake;
+  - a handshake started this way is given only a few seconds to draw a
+    response, rather than ``--hand-window``. If none arrives the client
+    logs a key negotiation timeout, restarts the attempt and moves on to
+    the next address or remote, so the address that answered the probe is
+    not retried during this cycle. The server answered a probe moments
+    earlier, so silence means it did not accept the reply as a reset,
+    which happens when a load balancer sends the probe and the handshake
+    to different instances, when NAT changes the source port, or when the
+    server rotated its session id key.
 
   The handshake shortcut is not used on Windows while DCO is active.
 
