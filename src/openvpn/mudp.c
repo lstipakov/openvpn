@@ -243,11 +243,27 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
         /* Out-of-band server probe. state->newbuf points at the TLV payload
          * (read_control_auth has stripped the opcode, session id and any
          * tls-auth/tls-crypt wrapping). Answer it without creating a session. */
+
+        /* A tls-crypt-v2 client must resend the WKc if it later uses this reply
+         * to start a handshake, since we keep no state. */
+        uint32_t reply_flags =
+            (verdict == VERDICT_VALID_OOB_WKC_V1) ? OOB_PROBE_REPLY_FLAG_RESEND_WKC : 0;
+
+        /* The client's third packet validates only while its SYN-cookie does, so
+         * the advertised connect_lifetime is inferred (not configurable): the
+         * guaranteed cookie window of ~handshake_window (2 quantised buckets; see
+         * check_session_hmac_and_pkt_id). Advertising more would make the client
+         * trust an already-expired cookie. (RFC: connect_lifetime is how long the
+         * server considers the reply valid.) */
+        int connect_lifetime = 2 * ((handwindow + 1) / 2);
+
         /* what we advertise; oob_build_probe_reply() adds the peer's session id */
         struct oob_probe_reply reply = {
             .priority = (uint16_t)m->top.options.server_probe_reply_priority,
             .weight = (uint16_t)m->top.options.server_probe_reply_weight,
             .max_latency_diff = (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
+            .connect_lifetime = (uint16_t)connect_lifetime,
+            .flags = reply_flags,
         };
         if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
                                    &state->peer_session_id, &reply))
