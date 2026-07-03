@@ -197,8 +197,11 @@ struct oob_probe_result
 {
     int index;
     bool responded;
-    unsigned int rtt_ms;          /* probe round-trip time in ms (responders only) */
-    struct oob_probe_reply reply; /* the values the server advertised */
+    unsigned int rtt_ms; /* probe round-trip time in ms (responders only) */
+    /* Captured from the packet and its reply TLV (responders only): */
+    struct session_id server_sid;      /* the packet's own session id = server SYN-cookie */
+    struct sockaddr_storage responder; /* address that answered (pin the connection to it) */
+    struct oob_probe_reply reply;      /* the values the server advertised */
 };
 
 /**

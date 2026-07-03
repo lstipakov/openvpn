@@ -249,6 +249,9 @@ struct context_2
     bool oob_probe_adopt;
     socket_descriptor_t oob_probe_sd;
     struct openvpn_sockaddr oob_probe_remote;
+    struct session_id oob_probe_client_sid;  /* our probe session id (cookie was minted over it) */
+    struct session_id oob_probe_server_sid;  /* the reply's session id = server cookie to echo back */
+    bool oob_probe_resend_wkc;               /* reply asked to complete with CONTROL_WKC_V1 (v2) */
 
     struct link_socket_actual *to_link_addr; /* IP address of remote */
     struct link_socket_actual from;          /* address of incoming datagram */

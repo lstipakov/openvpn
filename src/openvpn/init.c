@@ -3507,6 +3507,21 @@ do_init_frame_tls(struct context *c)
         /* Keep the max mtu also in the frame of tls multi so it can access
          * it in push_peer_info */
         c->c2.tls_multi->opt.frame.tun_max_mtu = c->c2.frame.tun_max_mtu;
+
+        /* OOB server probe: the probe reply already served as the server's
+         * HARD_RESET (it carried a valid SYN-cookie), so the handshake starts
+         * from that reply and we send no reset of our own. Count
+         * the reply as the initial packet received (as the server does before its
+         * own session_skip_to_pre_start), so tls_initial_packet_received() is true
+         * and check_server_poll_timeout() does not restart a connected session. */
+        if (c->c2.oob_probe_adopt)
+        {
+            c->c2.tls_multi->n_sessions++;
+            session_skip_to_pre_start_client(&c->c2.tls_multi->session[TM_ACTIVE],
+                                             &c->c2.oob_probe_client_sid,
+                                             &c->c2.oob_probe_server_sid, &c->c2.oob_probe_remote,
+                                             c->c2.oob_probe_resend_wkc);
+        }
     }
     if (c->c2.tls_auth_standalone)
     {
