@@ -2569,6 +2569,11 @@ session_skip_to_pre_start(struct tls_session *session, struct tls_pre_decrypt_st
     return session_move_pre_start(session, ks, true);
 }
 
+/* Seconds to wait for the server's first response to a probe-started handshake
+ * before giving up and falling back to a normal handshake. A couple of
+ * control-channel retransmits; capped at handshake_window by the caller. */
+#define OOB_PROBE_START_FALLBACK_SECS 5
+
 bool
 session_skip_to_pre_start_client(struct tls_session *session, const struct session_id *client_sid,
                                  const struct session_id *server_sid,
@@ -2619,6 +2624,12 @@ session_skip_to_pre_start_client(struct tls_session *session, const struct sessi
         return false;
     }
     ks->state = S_PRE_START;
+
+    /* Fail fast if the server ignores it: wait seconds, not handshake_window.
+     * tls_pre_decrypt() restores the full window once the server answers. */
+    ks->oob_probe_start = true;
+    ks->must_negotiate =
+        now + min_int(session->opt->handshake_window, OOB_PROBE_START_FALLBACK_SECS);
     return true;
 }
 
@@ -2867,9 +2878,15 @@ tls_process_state(struct tls_multi *multi, struct tls_session *session, struct b
     /* Are we timed out on receive? */
     if (now >= ks->must_negotiate && ks->state >= S_UNDEF && ks->state < S_ACTIVE)
     {
+        /* Report the window that actually applied: an unanswered probe-started
+         * handshake times out on the short fallback deadline, not
+         * handshake_window. */
+        int window = ks->oob_probe_start
+                         ? min_int(session->opt->handshake_window, OOB_PROBE_START_FALLBACK_SECS)
+                         : session->opt->handshake_window;
         msg(D_TLS_ERRORS,
             "TLS Error: TLS key negotiation failed to occur within %d seconds (check your network connectivity)",
-            session->opt->handshake_window);
+            window);
         goto error;
     }
 
@@ -3949,6 +3966,15 @@ tls_pre_decrypt(struct tls_multi *multi, const struct link_socket_actual *from, 
 
     /* Let our caller know we processed a control channel packet */
     ret = true;
+
+    /* First valid response to a probe-started handshake: the server accepted it,
+     * so restore the normal negotiation window (it was shortened to fail fast if
+     * the probe reply had been ignored). */
+    if (ks->oob_probe_start)
+    {
+        ks->oob_probe_start = false;
+        ks->must_negotiate = now + session->opt->handshake_window;
+    }
 
     /*
      * Set our remote address and remote session_id
