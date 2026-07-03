@@ -375,6 +375,16 @@ void link_socket_init_phase2(struct context *c, struct link_socket *sock);
 
 void do_preresolve(struct context *c);
 
+/**
+ * Look up a --preresolve result for hostname:servname. *ai then points into
+ * the cache, which owns it.
+ *
+ * @return 0 if found, -1 otherwise (like getaddrinfo)
+ */
+int get_cached_dns_entry(struct cached_dns_entry *dns_cache, const char *hostname,
+                         const char *servname, int ai_family, unsigned int resolve_flags,
+                         struct addrinfo **ai);
+
 void link_socket_close(struct link_socket *sock);
 
 #ifdef ENABLE_MANAGEMENT

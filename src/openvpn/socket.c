@@ -252,7 +252,7 @@ streqnull(const char *a, const char *b)
  * get_cached_dns_entry return 0 on success and -1
  * otherwise. (like getaddrinfo)
  */
-static int
+int
 get_cached_dns_entry(struct cached_dns_entry *dns_cache, const char *hostname, const char *servname,
                      int ai_family, unsigned int resolve_flags, struct addrinfo **ai)
 {
