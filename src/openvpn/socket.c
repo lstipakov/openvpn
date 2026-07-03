@@ -1431,6 +1431,48 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
         /* inherit (possibly guessed) info AF from parent context */
         sock->info.af = c->c2.accept_from->info.af;
     }
+    else if (mode == LS_MODE_UDP_ADOPT)
+    {
+        /* Adopt the OOB probe socket. create_socket_udp_configured() set it up with this
+         * socket's options and bind, so it only changes hands and keeps the source
+         * IP:port the server's cookie is bound to; phase 2 creates nothing. */
+        ASSERT(c->c2.oob_probe_sd != SOCKET_UNDEFINED);
+        sock->sd = c->c2.oob_probe_sd;
+        c->c2.oob_probe_sd = SOCKET_UNDEFINED; /* ownership moves to the link socket */
+        sock->info.af = c->c2.oob_probe_remote.addr.sa.sa_family;
+        sock->bind_local = false;              /* bound (or --nobind) by the prober already */
+        sock->sockflags |= SF_GETADDRINFO_DGRAM;
+
+        /* Take the probe's lookup as the remote list, so replies are checked
+         * against the addresses that were probed rather than against a second
+         * lookup that may return others; resolve_remote() then resolves nothing.
+         * Pin the exact address that answered, the one the cookie was minted
+         * for; resolve_remote() preserves a defined actual. */
+        struct link_socket_addr *lsa = sock->info.lsa;
+        if (lsa->remote_list && !c->options.resolve_in_advance)
+        {
+            freeaddrinfo(lsa->remote_list);
+        }
+        lsa->remote_list = c->c2.oob_probe_remote_list;
+        c->c2.oob_probe_remote_list = NULL; /* ownership moves with the socket */
+        lsa->current_remote = lsa->remote_list;
+        for (struct addrinfo *ai = lsa->remote_list; ai; ai = ai->ai_next)
+        {
+            if (ai->ai_family != c->c2.oob_probe_remote.addr.sa.sa_family)
+            {
+                continue;
+            }
+            struct openvpn_sockaddr entry = { 0 };
+            memcpy(&entry, ai->ai_addr, min_int((int)ai->ai_addrlen, (int)sizeof(entry)));
+            if (addr_port_match(&entry, &c->c2.oob_probe_remote))
+            {
+                lsa->current_remote = ai; /* a failed attempt moves on from here */
+                break;
+            }
+        }
+        CLEAR(lsa->actual);
+        lsa->actual.dest = c->c2.oob_probe_remote;
+    }
 
     /* are we running in HTTP proxy mode? */
     if (sock->http_proxy)
@@ -1515,7 +1557,19 @@ linksock_print_addr(struct link_socket *sock)
     const msglvl_t msglevel = (sock->mode == LS_MODE_TCP_ACCEPT_FROM) ? D_INIT_MEDIUM : M_INFO;
 
     /* print local address */
-    if (sock->bind_local)
+    if (sock->mode == LS_MODE_UDP_ADOPT)
+    {
+        /* bound (or not) by the prober, so ask the socket itself */
+        struct sockaddr_storage local = { 0 };
+        socklen_t len = sizeof(local);
+        if (!getsockname(sock->sd, (struct sockaddr *)&local, &len))
+        {
+            msg(msglevel, "%s link local (adopted): %s",
+                proto2ascii(sock->info.proto, sock->info.af, true),
+                print_sockaddr((struct sockaddr *)&local, &gc));
+        }
+    }
+    else if (sock->bind_local)
     {
         sa_family_t ai_family = sock->info.lsa->actual.dest.addr.sa.sa_family;
         /* Socket is always bound on the first matching address,
@@ -1727,7 +1781,7 @@ link_socket_init_phase2(struct context *c, struct link_socket *sock)
         goto done;
     }
 #endif
-    if (sock->info.lsa->current_remote)
+    if (sock->mode != LS_MODE_UDP_ADOPT && sock->info.lsa->current_remote)
     {
         create_socket(sock, sock->info.lsa->current_remote);
     }

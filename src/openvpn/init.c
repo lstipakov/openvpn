@@ -90,6 +90,8 @@ void
 context_clear_2(struct context *c)
 {
     CLEAR(c->c2);
+    /* 0 is a valid descriptor, so "no socket" has to be set explicitly */
+    c->c2.oob_probe_sd = SOCKET_UNDEFINED;
 }
 
 void
@@ -3465,6 +3467,18 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     }
 }
 
+/* Free a probe lookup no connection took, as clear_remote_addrlist() frees a
+ * remote list: a --preresolve list belongs to the DNS cache. */
+static void
+oob_probe_free_remote_list(struct context *c)
+{
+    if (c->c2.oob_probe_remote_list && !c->options.resolve_in_advance)
+    {
+        freeaddrinfo(c->c2.oob_probe_remote_list);
+    }
+    c->c2.oob_probe_remote_list = NULL;
+}
+
 static void
 do_init_frame_tls(struct context *c)
 {
@@ -3788,6 +3802,12 @@ do_init_socket_phase1(struct context *c)
                 mode = LS_MODE_TCP_ACCEPT_FROM;
             }
         }
+        /* adopt the OOB server-probe socket as this client's connection socket
+         * (probe-started handshake); only the single client socket is ever adopted */
+        else if (c->c2.oob_probe_adopt && i == 0)
+        {
+            mode = LS_MODE_UDP_ADOPT;
+        }
 
         /* init each socket with its specific args */
         link_socket_init_phase1(c, i, mode);
@@ -3953,6 +3973,17 @@ do_close_free_key_schedule(struct context *c, bool free_ssl_ctx)
 static void
 do_close_link_socket(struct context *c)
 {
+    /* An OOB probe socket handed off for a probe-started handshake is adopted by the
+     * link socket in link_socket_init_phase1() (which clears oob_probe_sd). If the
+     * connection attempt aborted before that, the fd is still owned here; close it
+     * so it is not leaked when context_clear_2() zeroes c2. */
+    if (c->c2.oob_probe_sd != SOCKET_UNDEFINED)
+    {
+        openvpn_close_socket(c->c2.oob_probe_sd);
+        c->c2.oob_probe_sd = SOCKET_UNDEFINED;
+    }
+    oob_probe_free_remote_list(c);
+
     if (c->c2.link_sockets && c->c2.link_socket_owned)
     {
         for (int i = 0; i < c->c1.link_sockets_num; i++)
@@ -4807,6 +4838,8 @@ void
 inherit_context_child(struct context *dest, const struct context *src, struct link_socket *sock)
 {
     CLEAR(*dest);
+    /* 0 is a valid descriptor, so "no socket" has to be set explicitly */
+    dest->c2.oob_probe_sd = SOCKET_UNDEFINED;
 
     /* proto_is_dgram will ASSERT(0) if proto is invalid */
     dest->mode = proto_is_dgram(sock->info.proto) ? CM_CHILD_UDP : CM_CHILD_TCP;

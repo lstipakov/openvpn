@@ -198,6 +198,10 @@ struct link_socket
 #define LS_MODE_DEFAULT         0
 #define LS_MODE_TCP_LISTEN      1
 #define LS_MODE_TCP_ACCEPT_FROM 2
+/* Adopt the OOB server-probe socket, created and set up like a connection
+ * socket (bound unless --nobind), as the connection socket instead of creating
+ * one. */
+#define LS_MODE_UDP_ADOPT       3
     int mode;
 
     int resolve_retry_seconds;
