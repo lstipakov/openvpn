@@ -227,6 +227,8 @@ struct key_state
     time_t initial;                        /* when we created this session */
     time_t established;                    /* when our state went S_ACTIVE */
     time_t must_negotiate;                 /* key negotiation times out if not finished before this time */
+    bool oob_probe_start;                  /* probe-started handshake: must_negotiate is a short
+                                            * first-response deadline, not the full window */
     time_t must_die;                       /* this object is destroyed at this time */
     time_t peer_last_packet;               /* Last time we received a packet in this control session */
 
