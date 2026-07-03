@@ -240,7 +240,16 @@ struct context_2
 
     bool link_socket_owned;
 
-    const struct link_socket *accept_from;   /* possibly do accept() on a parent link_socket */
+    const struct link_socket *accept_from; /* possibly do accept() on a parent link_socket */
+
+    /* OOB probe-started handshake: when oob_probe_adopt is true, the
+     * connection adopts oob_probe_sd (the winning remote's probe
+     * socket) instead of creating one, and pins oob_probe_remote (the exact
+     * address probed) as the outgoing address, so the source IP+port and the
+     * destination match what the server's handshake cookie is bound to. */
+    bool oob_probe_adopt;
+    socket_descriptor_t oob_probe_sd;
+    struct openvpn_sockaddr oob_probe_remote;
 
     struct link_socket_actual *to_link_addr; /* IP address of remote */
     struct link_socket_actual from;          /* address of incoming datagram */
