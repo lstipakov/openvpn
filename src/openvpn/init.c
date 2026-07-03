@@ -3479,6 +3479,44 @@ oob_probe_free_remote_list(struct context *c)
     c->c2.oob_probe_remote_list = NULL;
 }
 
+/* Give up the probe socket and the handshake shortcut that came with it. */
+static void
+oob_probe_drop_adoption(struct context *c)
+{
+    openvpn_close_socket(c->c2.oob_probe_sd);
+    c->c2.oob_probe_sd = SOCKET_UNDEFINED;
+    oob_probe_free_remote_list(c);
+    c->c2.oob_probe_adopt = false;
+}
+
+/* The probe socket and the handshake shortcut belong to the remote that
+ * answered: give them up if next_connection_entry() picked a different one. */
+static void
+oob_probe_confirm_adoption(struct context *c)
+{
+    if (!c->c2.oob_probe_adopt)
+    {
+        return;
+    }
+
+    /* next_connection_entry() maps the entry by value and the management
+     * interface may then rewrite that copy, so compare what we ended up with,
+     * not just which entry was picked. */
+    const struct connection_list *l = c->options.connection_list;
+    const struct connection_entry *won = c->c2.oob_probe_ce;
+    const struct connection_entry *ce = &c->options.ce;
+    if (l->array[l->current] == won && proto_is_udp(ce->proto) && !ce->socks_proxy_server
+        && !ce->http_proxy_options && ce->remote && won->remote
+        && streq(ce->remote, won->remote) && ce->remote_port && won->remote_port
+        && streq(ce->remote_port, won->remote_port))
+    {
+        return;
+    }
+
+    msg(D_LOW, "server-probe: a different remote was selected, not adopting the probe socket");
+    oob_probe_drop_adoption(c);
+}
+
 static void
 do_init_frame_tls(struct context *c)
 {
@@ -3491,6 +3529,32 @@ do_init_frame_tls(struct context *c)
         /* Keep the max mtu also in the frame of tls multi so it can access
          * it in push_peer_info */
         c->c2.tls_multi->opt.frame.tun_max_mtu = c->c2.frame.tun_max_mtu;
+
+        /* OOB server probe: the reply already served as the server's HARD_RESET
+         * (it carried a valid SYN-cookie), so the handshake starts from it and we
+         * send no reset of our own. Count it as the initial packet received, as
+         * the server does, so check_server_poll_timeout() does not restart us.
+         * The reply only stands for as long as the server advertised, which a
+         * passphrase or token prompt can outlast. */
+        update_time();
+        if (c->c2.oob_probe_adopt
+            && now >= c->c2.oob_probe_reply_at + c->c2.oob_probe_connect_lifetime)
+        {
+            msg(D_LOW,
+                "server-probe: the reply's connect-lifetime (%d s) elapsed before the handshake"
+                " could start; connecting normally",
+                c->c2.oob_probe_connect_lifetime);
+            oob_probe_drop_adoption(c);
+        }
+
+        if (c->c2.oob_probe_adopt)
+        {
+            c->c2.tls_multi->n_sessions++;
+            session_skip_to_pre_start_client(&c->c2.tls_multi->session[TM_ACTIVE],
+                                             &c->c2.oob_probe_client_sid,
+                                             &c->c2.oob_probe_server_sid, &c->c2.oob_probe_remote,
+                                             c->c2.oob_probe_resend_wkc);
+        }
     }
     if (c->c2.tls_auth_standalone)
     {
@@ -4496,6 +4560,8 @@ init_instance(struct context *c, const struct env_set *env, const unsigned int f
 
     /* map in current connection entry */
     next_connection_entry(c);
+
+    oob_probe_confirm_adoption(c);
 
     /* should we disable paging? */
     if (c->first_time && options->mlock)

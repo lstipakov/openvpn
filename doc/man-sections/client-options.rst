@@ -646,8 +646,25 @@ configuration.
   probes per period whose timestamp is more than its ``--hand-window``
   away from its own clock, so a client whose clock is badly wrong may get
   no replies and then keeps the configured order. Ordering by probe
-  replaces any order that ``--remote-random`` produced. See
-  ``--server-probe-reply`` for the server side.
+  replaces any order that ``--remote-random`` produced.
+
+  When the winning server supports it, the probe exchange also starts the
+  handshake: its reply stands in for the server's reset packet, so the
+  client sends no reset of its own and the connection is established one
+  round trip sooner. This has consequences worth knowing:
+
+  - the connection reuses the probe's socket, and therefore its source
+    port, which matters where firewall or NAT rules pin a port;
+  - the connection first tries the address that answered, rather than
+    the remote's first resolved address;
+  - the server honours its reply only for a limited time (see
+    ``--server-probe-reply``), so an unusually slow start-up, such as a
+    private key passphrase or token prompt, can outlast it; the client
+    then falls back to a normal handshake.
+
+  The handshake shortcut is not used on Windows while DCO is active.
+
+  See ``--server-probe-reply`` for the server side.
 
 --static-challenge args
   Enable static challenge/response protocol

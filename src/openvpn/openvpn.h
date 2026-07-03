@@ -248,10 +248,16 @@ struct context_2
      * address probed) as the outgoing address, so the source IP+port and the
      * destination match what the server's handshake cookie is bound to. */
     bool oob_probe_adopt;
+    const struct connection_entry *oob_probe_ce; /* the entry the probe won on */
+    time_t oob_probe_reply_at;                   /* when its reply arrived */
+    int oob_probe_connect_lifetime;              /* how long that reply stays usable */
     socket_descriptor_t oob_probe_sd;
     struct openvpn_sockaddr oob_probe_remote;
     /* the lookup the probe used; the connection takes it as its remote_list */
     struct addrinfo *oob_probe_remote_list;
+    struct session_id oob_probe_client_sid;  /* our probe session id (cookie was minted over it) */
+    struct session_id oob_probe_server_sid;  /* the reply's session id = server cookie to echo back */
+    bool oob_probe_resend_wkc;               /* reply asked to complete with CONTROL_WKC_V1 (v2) */
 
     struct link_socket_actual *to_link_addr; /* IP address of remote */
     struct link_socket_actual from;          /* address of incoming datagram */

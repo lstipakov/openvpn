@@ -10,6 +10,14 @@
   weight with DNS-SRV-like semantics. Servers advertise these values with
   `--server-probe-reply`.
 
+* **Probe exchange doubles as the start of the handshake**
+
+  When a probing client picks a server that advertises support for it, the probe
+  and its reply take the place of the client's and server's reset packets, so the
+  client does not need a separate reset exchange before the handshake. This saves
+  one round trip compared with probing and then connecting, and needs no extra
+  configuration.
+
 ## User-visible Changes
 
 * **Parsing Distinguished Names in certificates**
