@@ -38,6 +38,7 @@
 #include "otime.h"
 #include "fdmisc.h"
 #include "crypto.h"
+#include "dco.h"
 #include "error.h"
 
 #include "memdbg.h"
@@ -357,6 +358,13 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
         return;
     }
 
+    /* The reply's own session id (the server's stateless SYN-cookie) follows the
+     * opcode byte. Capture it before read_control_auth() strips it: a client may
+     * reuse it to start the handshake from this reply (the connect_lifetime
+     * advertisement). */
+    struct session_id server_sid;
+    memcpy(server_sid.id, data + 1, SID_SIZE);
+
     struct buffer buf;
     buf_set_read(&buf, data, (size_t)len);
 
@@ -400,6 +408,8 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
 
         results[i].responded = true;
         results[i].rtt_ms = (ms > 0) ? (unsigned int)ms : 0;
+        results[i].server_sid = server_sid;
+        results[i].responder = *from; /* pin the connection to the address that answered */
         results[i].reply = reply;
 
         i = oob_probe_next_target_at(from, targets, results, n, i + 1);
@@ -772,11 +782,6 @@ client_probe_and_order_remotes(struct context *c)
         oob_probe_collect(&pc, &probe, &client_sid, &tas->tls_wrap, targets, results, l->len,
                           c->sig);
     }
-    oob_probe_sockets_close(&pc);
-    if (bind_local)
-    {
-        freeaddrinfo(bind_local);
-    }
 
     /* Log each remote's outcome while results[i] still maps to array[i]. */
     int responded = 0;
@@ -792,10 +797,10 @@ client_probe_and_order_remotes(struct context *c)
             int margin = oob_effective_margin(&results[i], client_margin);
             const char *margin_src = client_margin >= 0 ? "client" : "server-advertised";
             msg(D_LOW,
-                "server-probe: %s:%s answered (priority %d, weight %d, rtt %u ms;"
-                " latency margin %d ms [%s])",
+                "server-probe: %s:%s answered (priority %d, weight %d, connect-lifetime %d s,"
+                " rtt %u ms; latency margin %d ms [%s])",
                 ce->remote, ce->remote_port, results[i].reply.priority, results[i].reply.weight,
-                results[i].rtt_ms, margin, margin_src);
+                results[i].reply.connect_lifetime, results[i].rtt_ms, margin, margin_src);
         }
         else
         {
@@ -817,6 +822,65 @@ client_probe_and_order_remotes(struct context *c)
     msg(M_INFO, "server-probe: %d of %d remote(s) answered; connecting best-first", responded,
         l->len);
 
+    /* If the winner advertised a connect_lifetime, its reply also served as the
+     * server's reset: hand its probe socket and the captured cookie to the
+     * connection, which then starts the handshake from that reply (see
+     * session_skip_to_pre_start_client). Reusing that socket keeps the source
+     * IP+port the cookie is bound to. dco-win cannot hand a socket to the
+     * kernel, so it only gets the probe ordering. */
+
+    /* Single-use, so the RFC's connect_lifetime expiry check is not needed yet:
+     * we probe once (c->first_time) and arm only results[0]. */
+    bool probe_start = results[0].responded && results[0].reply.connect_lifetime > 0;
+    bool dco_win_gate = false;
+#if defined(_WIN32)
+    if (dco_enabled(&c->options))
+    {
+        probe_start = false;
+        dco_win_gate = true;
+    }
+#endif
+    if (probe_start)
+    {
+        const int af_idx = probe_af_index(results[0].responder.addr.sa.sa_family);
+        c->c2.oob_probe_sd = pc.sd[af_idx];
+        pc.sd[af_idx] = SOCKET_UNDEFINED; /* relinquish: the connection owns it now */
+
+        c->c2.oob_probe_remote = results[0].responder;
+        c->c2.oob_probe_client_sid = client_sid;
+        c->c2.oob_probe_server_sid = results[0].server_sid;
+        c->c2.oob_probe_resend_wkc =
+            (results[0].reply.flags & OOB_PROBE_REPLY_FLAG_RESEND_WKC) != 0;
+        c->c2.oob_probe_adopt = true;
+
+        msg(D_LOW, "server-probe: starting handshake from probe reply of %s:%s"
+                   " (connect-lifetime %d s)",
+            l->array[0]->remote, l->array[0]->remote_port, results[0].reply.connect_lifetime);
+    }
+    else if (results[0].responded)
+    {
+        /* A server answered but we won't start the handshake from it -- say why. */
+        if (dco_win_gate)
+        {
+            msg(D_LOW, "server-probe: cannot start the handshake from a probe reply"
+                       " with dco-win;"
+                       " using a full handshake");
+        }
+        else if (results[0].reply.connect_lifetime == 0)
+        {
+            msg(D_LOW, "server-probe: %s:%s did not advertise a connect-lifetime"
+                       " (connect-lifetime 0); using a full handshake",
+                l->array[0]->remote, l->array[0]->remote_port);
+        }
+    }
+
+    /* Close any probe sockets we did not hand off to the connection. */
+    oob_probe_sockets_close(&pc);
+
+    if (bind_local)
+    {
+        freeaddrinfo(bind_local);
+    }
     oob_probe_free_wrap(c, tas);
     gc_free(&gc);
 }

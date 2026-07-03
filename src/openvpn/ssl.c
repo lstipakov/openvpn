@@ -2569,6 +2569,59 @@ session_skip_to_pre_start(struct tls_session *session, struct tls_pre_decrypt_st
     return session_move_pre_start(session, ks, true);
 }
 
+bool
+session_skip_to_pre_start_client(struct tls_session *session, const struct session_id *client_sid,
+                                 const struct session_id *server_sid,
+                                 const struct openvpn_sockaddr *remote, bool resend_wkc)
+{
+    struct key_state *ks = &session->key[KS_PRIMARY];
+
+    /* Our session id must be the one used for the probe: the server's cookie
+     * (server_sid) is an HMAC over it, and the server re-derives and checks it
+     * when it validates our third packet. */
+    session->session_id = *client_sid;
+    ks->session_id_remote = *server_sid;
+
+    struct link_socket_actual act = { 0 };
+    act.dest = *remote;
+    ks->remote_addr = act;
+    session->untrusted_addr = act;
+    session->burst = true;
+
+    /* tls-crypt-v2: the stateless server discarded the WKc after the probe, so
+     * complete the handshake with P_CONTROL_WKC_V1 (drives control_packet_needs_wkc). */
+    if (resend_wkc)
+    {
+        ks->crypto_options.flags |= CO_RESEND_WKC;
+    }
+
+    /* We never received the server's HARD_RESET (id 0) -- the probe reply stood
+     * in for it. Acknowledge that phantom id 0 so our third packet carries an
+     * ACK together with the server session id (the cookie): reliable_ack_write()
+     * only emits that session id when at least one ACK is present, and the server
+     * needs it to validate the stateless cookie. */
+    reliable_ack_acknowledge_packet_id(ks->rec_ack, 0);
+
+    /* Skip one (RESET) packet in each direction, so ids start at 1 (see
+     * session_skip_to_pre_start). */
+    ks->rec_reliable->packet_id = 1;
+    session->tls_wrap.opt.packet_id.send.id = 1;
+
+    /* Do not send our own HARD_RESET. Unlike the server's skip, the client must
+     * send first: the stateless server only replies once it sees our third
+     * packet. session_move_pre_start(skip=true) leaves us in S_PRE_START_SKIP,
+     * which only advances when a packet is *received*; instead drop to
+     * S_PRE_START with an empty send-reliable (the initial packet was generated
+     * and immediately deleted), so tls_process() promotes us to S_START and
+     * sends the ClientHello without waiting for a server reset. */
+    if (!session_move_pre_start(session, ks, true))
+    {
+        return false;
+    }
+    ks->state = S_PRE_START;
+    return true;
+}
+
 /**
  * Parses the TLVs (type, length, value) in the early negotiation
  */
