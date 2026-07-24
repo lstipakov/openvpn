@@ -29,7 +29,9 @@
 #include "multi.h"
 #include "forward.h"
 #include "mtcp.h"
+#include "mudp.h"
 #include "multi_io.h"
+#include "ssl_pkt.h"
 
 #include "memdbg.h"
 
@@ -88,6 +90,60 @@ multi_create_instance_tcp(struct multi_context *m, struct link_socket *sock)
     gc_free(&gc);
     ASSERT(!(mi && mi->halt));
     return mi;
+}
+
+bool
+multi_tcp_intercept_server_probe(struct multi_context *m, struct multi_instance *mi,
+                                 struct link_socket *sock)
+{
+    struct context *c = &mi->context;
+
+    /* Only the very first packet of a connection can be a probe:
+     * link_read_bytes is incremented by process_incoming_link_part1(),
+     * which has not yet run for the packet sitting in c2.buf. */
+    if (c->c2.link_read_bytes > 0 || BLEN(&c->c2.buf) < 1)
+    {
+        return false;
+    }
+
+    const uint8_t opcode = *BPTR(&c->c2.buf) >> P_OPCODE_SHIFT;
+    if (opcode != P_CONTROL_OOB_V1 && opcode != P_CONTROL_OOB_WKC_V1)
+    {
+        return false;
+    }
+
+    ASSERT(m->top.c2.tls_auth_standalone);
+
+    /* The same stateless verdict machinery the UDP path uses: validates the
+     * control-channel wrapping and unwraps a tls-crypt-v2 WKc. */
+    struct tls_pre_decrypt_state state = { 0 };
+    enum first_packet_verdict verdict =
+        tls_pre_decrypt_lite(m->top.c2.tls_auth_standalone, &state, &c->c2.from, &c->c2.buf);
+
+    if (verdict == VERDICT_VALID_OOB_V1 || verdict == VERDICT_VALID_OOB_WKC_V1)
+    {
+        /* Rate-limit replies as the UDP path does, so a probe flood cannot use
+         * us as a reflector. do_pre_decrypt_check() checks this for UDP; this is
+         * the TCP entry point. */
+        if (reflect_filter_rate_limit_check(m->initial_rate_limiter))
+        {
+            /* connect_lifetime 0: a TCP reply cannot serve as the server's reset,
+             * because the connection it arrived on -- the only state such a reuse
+             * could build on -- is closed below. */
+            multi_answer_server_probe(m, c, &state, sock, verdict, 0);
+        }
+    }
+
+    free_tls_pre_decrypt_state(&state);
+
+    /* One probe, one reply: close the connection either way. A conforming
+     * peer never reuses a probe connection for a handshake (it probes,
+     * ranks, and reconnects; connection reuse is the future adopt/shortcut
+     * feature), and an OOB first packet that failed validation would only
+     * die as a fatal decrypt error in the TLS machinery if we let normal
+     * processing continue. The kernel still flushes the queued reply. */
+    register_signal(c->sig, SIGTERM, "server-probe-close");
+    return true;
 }
 
 bool

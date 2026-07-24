@@ -47,6 +47,24 @@ bool multi_tcp_process_outgoing_link_ready(struct multi_context *m, struct multi
 
 struct multi_instance *multi_create_instance_tcp(struct multi_context *m, struct link_socket *sock);
 
+/**
+ * Answer a SERVER_PROBE arriving as the very first packet on a freshly
+ * accepted TCP connection, then signal the instance for close. On TCP an
+ * out-of-band probe cannot be answered statelessly as on UDP -- accept()
+ * already created an instance -- so the probe is answered from that instance
+ * and the instance is torn down right after: one probe, one reply, close.
+ *
+ * Must be called before the packet in mi->context.c2.buf reaches the TLS
+ * machinery, which would treat the OOB opcode as a fatal decrypt error.
+ *
+ * @return true if the packet was consumed (an OOB opcode: answered, or
+ *         dropped as invalid) and the instance close has been signalled;
+ *         false if this is not an OOB first packet and normal processing
+ *         should continue.
+ */
+bool multi_tcp_intercept_server_probe(struct multi_context *m, struct multi_instance *mi,
+                                      struct link_socket *sock);
+
 void multi_tcp_link_out_deferred(struct multi_context *m, struct multi_instance *mi);
 
 void multi_tcp_delete_event(struct multi_io *multi_io, event_t event);

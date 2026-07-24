@@ -3464,6 +3464,17 @@ multi_process_incoming_link(struct multi_context *m, struct multi_instance *inst
         return true;
     }
 
+    /* On TCP, a fresh connection's first packet may be an out-of-band server
+     * probe. Answer it before the packet reaches the TLS machinery, which
+     * would treat the OOB opcode as a fatal decrypt error. (A read with a
+     * non-NULL instance only happens for connection-oriented sockets; UDP
+     * probes are answered pre-instance in do_pre_decrypt_check().) */
+    if (instance && !proto_is_dgram(sock->info.proto)
+        && multi_tcp_intercept_server_probe(m, instance, sock))
+    {
+        return true;
+    }
+
     if (!instance)
     {
 #ifdef MULTI_DEBUG_EVENT_LOOP
