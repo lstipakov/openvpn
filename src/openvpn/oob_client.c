@@ -64,6 +64,8 @@ struct probe_target
     int n_dests;
     bool is_tcp;            /* probed over per-address TCP connections instead of the
                              * shared UDP sockets; excluded from UDP resend/addr-match */
+    int outstanding;        /* TCP: addresses still queued or in flight; the target
+                             * settles (as a non-responder) when this reaches 0 */
     bool sent;
     struct timeval sent_at; /* when the probe was sent, for RTT measurement */
 };
@@ -81,9 +83,23 @@ struct probe_target
  * connects are non-blocking and run in parallel with each other and with the
  * UDP probes, inside the same select loop and probe window. RTT is measured
  * probe-to-reply (the connect is not counted), so TCP and UDP measurements are
- * comparable. Bounded so the fd set stays well below every platform's select()
- * limit (64 sockets per set on Windows, fd values < FD_SETSIZE elsewhere). */
+ * comparable.
+ *
+ * This caps concurrency, not coverage: at most this many connections are in
+ * flight at once (the fd set must stay below every platform's select() limit:
+ * 64 sockets per set on Windows, fd values < FD_SETSIZE elsewhere), and the
+ * remaining addresses wait in a queue, each started as soon as a connection
+ * settles and frees its slot. The queue is ordered round-robin by remote --
+ * every remote's first address before any remote's second -- so no remote is
+ * starved by an earlier one that resolves to many addresses. */
 #define OOB_TCP_PROBE_MAX_CONNS 32
+
+/* One queued TCP probe: an address (by index) of a target still to be tried. */
+struct oob_tcp_pending
+{
+    int target; /* index into targets[]/results[] */
+    int addr;   /* index into that target's dests[] */
+};
 
 enum oob_tcp_state
 {
@@ -108,7 +124,10 @@ struct probe_ctx
 {
     socket_descriptor_t sd[PROBE_AF_COUNT]; /* SOCKET_UNDEFINED if that AF is unavailable */
     struct oob_tcp_conn *tcp;               /* gc array of OOB_TCP_PROBE_MAX_CONNS slots */
-    int n_tcp;                              /* slots in use */
+    int n_tcp;                              /* slot high watermark; closed slots are reused */
+    struct oob_tcp_pending *queue;          /* gc array: addresses not yet connected */
+    int queue_len;
+    int queue_head;                         /* next queue entry to start */
 };
 
 /* af is an int (not sa_family_t) so callers can pass addrinfo::ai_family
@@ -339,11 +358,12 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
 
     /* Match the reply's source address to one of the addresses we probed for a
      * remote. The first reply for a remote wins (a remote with several addresses
-     * may answer from more than one). TCP targets have no probed datagram
-     * addresses (n_dests == 0), so they never match a UDP reply. */
+     * may answer from more than one). TCP targets never match: their replies
+     * arrive on their own connections, and a UDP source may coincide with a
+     * TCP target's address when a server offers both protocols on one port. */
     for (int i = 0; i < n; i++)
     {
-        if (!targets[i].sent || results[i].responded)
+        if (!targets[i].sent || targets[i].is_tcp || results[i].responded)
         {
             continue;
         }
@@ -387,20 +407,23 @@ oob_tcp_conn_close(struct oob_tcp_conn *conn)
     conn->state = OOB_TCP_CLOSED;
 }
 
-/* Begin one non-blocking probe connect to @p dest for target @p target_idx.
- * Returns true if a connection slot is now in flight (or already connected),
- * false if the slot could not be used (cap reached, socket/connect failure). */
-static bool
-oob_probe_tcp_connect_start(struct probe_ctx *pc, int target_idx, const struct sockaddr *dest,
-                            socklen_t destlen)
+/* A connection settled without recording a reply (or after recording one):
+ * close it and account for it, so its target can settle and its slot can
+ * host the next queued address. */
+static void
+oob_tcp_conn_settle(struct oob_tcp_conn *conn, struct probe_target *targets)
 {
-    if (pc->n_tcp >= OOB_TCP_PROBE_MAX_CONNS)
-    {
-        msg(D_LOW, "server-probe: TCP probe connection cap (%d) reached, skipping an address",
-            OOB_TCP_PROBE_MAX_CONNS);
-        return false;
-    }
+    targets[conn->target].outstanding--;
+    oob_tcp_conn_close(conn);
+}
 
+/* Begin one non-blocking probe connect to @p dest for target @p target_idx,
+ * in connection slot @p slot. Returns true if the connection is now in flight
+ * (or already connected), false on socket/connect failure. */
+static bool
+oob_probe_tcp_connect_start(struct probe_ctx *pc, int slot, int target_idx,
+                            const struct sockaddr *dest, socklen_t destlen)
+{
     socket_descriptor_t sd = socket(dest->sa_family, SOCK_STREAM, IPPROTO_TCP);
     if (sd == SOCKET_UNDEFINED)
     {
@@ -418,7 +441,7 @@ oob_probe_tcp_connect_start(struct probe_ctx *pc, int target_idx, const struct s
     set_cloexec(sd);
     set_nonblock(sd);
 
-    struct oob_tcp_conn *conn = &pc->tcp[pc->n_tcp];
+    struct oob_tcp_conn *conn = &pc->tcp[slot];
     CLEAR(*conn);
     conn->sd = sd;
     conn->target = target_idx;
@@ -439,14 +462,62 @@ oob_probe_tcp_connect_start(struct probe_ctx *pc, int target_idx, const struct s
 #endif
         )
         {
+            /* The slot was claimed before connect(); a reused slot left in
+             * OOB_TCP_CONNECTING (== 0, the CLEAR state) with a closed fd
+             * would be armed into select() forever. */
+            conn->state = OOB_TCP_CLOSED;
+            conn->sd = SOCKET_UNDEFINED;
             openvpn_close_socket(sd);
             return false;
         }
         conn->state = OOB_TCP_CONNECTING;
     }
 
-    pc->n_tcp++;
+    if (slot >= pc->n_tcp)
+    {
+        pc->n_tcp = slot + 1;
+    }
     return true;
+}
+
+/* Start queued probe connects in free (closed or never-used) slots, keeping at
+ * most OOB_TCP_PROBE_MAX_CONNS connections in flight. Queued addresses of
+ * targets that have answered in the meantime are dropped, and an address whose
+ * connect cannot even start settles immediately -- in both cases the target's
+ * outstanding count is consumed. */
+static void
+oob_probe_tcp_refill(struct probe_ctx *pc, struct probe_target *targets,
+                     const struct oob_probe_result *results)
+{
+    int slot = 0;
+    while (pc->queue_head < pc->queue_len)
+    {
+        while (slot < OOB_TCP_PROBE_MAX_CONNS && slot < pc->n_tcp
+               && pc->tcp[slot].state != OOB_TCP_CLOSED)
+        {
+            slot++;
+        }
+        if (slot >= OOB_TCP_PROBE_MAX_CONNS)
+        {
+            return; /* every slot busy; retry when one settles */
+        }
+
+        const struct oob_tcp_pending *p = &pc->queue[pc->queue_head++];
+        struct probe_target *t = &targets[p->target];
+
+        if (results[p->target].responded)
+        {
+            t->outstanding--; /* already answered: no need to probe further addresses */
+            continue;
+        }
+        if (!oob_probe_tcp_connect_start(pc, slot, p->target,
+                                         (const struct sockaddr *)&t->dests[p->addr],
+                                         t->destlens[p->addr]))
+        {
+            t->outstanding--; /* could not start: this address settles */
+            continue;
+        }
+    }
 }
 
 /* The connection became writable: complete the connect if one was in flight
@@ -454,7 +525,8 @@ oob_probe_tcp_connect_start(struct probe_ctx *pc, int target_idx, const struct s
  * the framed probe, resuming after a short write. Once the probe is fully
  * written the RTT clock starts and the connection waits for the reply. */
 static void
-oob_probe_tcp_writable(struct oob_tcp_conn *conn, const struct buffer *framed_probe)
+oob_probe_tcp_writable(struct oob_tcp_conn *conn, const struct buffer *framed_probe,
+                       struct probe_target *targets)
 {
     if (conn->state == OOB_TCP_CONNECTING)
     {
@@ -462,7 +534,7 @@ oob_probe_tcp_writable(struct oob_tcp_conn *conn, const struct buffer *framed_pr
         socklen_t len = sizeof(val);
         if (getsockopt(conn->sd, SOL_SOCKET, SO_ERROR, (void *)&val, &len) != 0 || val != 0)
         {
-            oob_tcp_conn_close(conn); /* refused/unreachable: settled, no responder */
+            oob_tcp_conn_settle(conn, targets); /* refused/unreachable: no responder */
             return;
         }
         conn->state = OOB_TCP_SENDING;
@@ -479,7 +551,7 @@ oob_probe_tcp_writable(struct oob_tcp_conn *conn, const struct buffer *framed_pr
             {
                 return; /* stay in OOB_TCP_SENDING, resume on next writable */
             }
-            oob_tcp_conn_close(conn);
+            oob_tcp_conn_settle(conn, targets);
             return;
         }
         conn->tx_off += n;
@@ -495,7 +567,8 @@ oob_probe_tcp_writable(struct oob_tcp_conn *conn, const struct buffer *framed_pr
  * settles the connection as a non-responder. */
 static void
 oob_probe_tcp_readable(struct oob_tcp_conn *conn, const struct session_id *client_sid,
-                       const struct tls_wrap_ctx *base_wrap, struct oob_probe_result *results)
+                       const struct tls_wrap_ctx *base_wrap, struct probe_target *targets,
+                       struct oob_probe_result *results)
 {
     uint8_t *dst;
     int want = oob_frame_reader_want(&conn->rd, &dst);
@@ -506,7 +579,7 @@ oob_probe_tcp_readable(struct oob_tcp_conn *conn, const struct session_id *clien
         {
             return;
         }
-        oob_tcp_conn_close(conn); /* peer closed (e.g. no probe support) or error */
+        oob_tcp_conn_settle(conn, targets); /* peer closed (e.g. no probe support) or error */
         return;
     }
 
@@ -526,24 +599,25 @@ oob_probe_tcp_readable(struct oob_tcp_conn *conn, const struct session_id *clien
                 oob_probe_record_result(&results[conn->target], &reply, &server_sid,
                                         &conn->sent_at, &conn->dest);
             }
-            oob_tcp_conn_close(conn);
+            oob_tcp_conn_settle(conn, targets);
             return;
         }
 
         case OOB_FRAME_ERROR:
         default:
-            oob_tcp_conn_close(conn);
+            oob_tcp_conn_settle(conn, targets);
             return;
     }
 }
 
 /* Has every probed target settled? A UDP target settles only by answering
  * (datagrams may be lost, so we keep waiting for the window/retries); a TCP
- * target also settles when all of its connections are closed (the transport is
- * reliable -- a refused or reset connection will not answer later). */
+ * target also settles when its outstanding count -- addresses still queued or
+ * in flight -- reaches 0 (the transport is reliable: a refused or reset
+ * connection will not answer later). */
 static bool
-oob_probe_all_settled(const struct probe_ctx *pc, const struct probe_target *targets,
-                      const struct oob_probe_result *results, int n)
+oob_probe_all_settled(const struct probe_target *targets, const struct oob_probe_result *results,
+                      int n)
 {
     for (int i = 0; i < n; i++)
     {
@@ -551,16 +625,9 @@ oob_probe_all_settled(const struct probe_ctx *pc, const struct probe_target *tar
         {
             continue;
         }
-        if (!targets[i].is_tcp)
+        if (!targets[i].is_tcp || targets[i].outstanding > 0)
         {
             return false;
-        }
-        for (int k = 0; k < pc->n_tcp; k++)
-        {
-            if (pc->tcp[k].target == i && pc->tcp[k].state != OOB_TCP_CLOSED)
-            {
-                return false;
-            }
         }
     }
     return true;
@@ -568,20 +635,24 @@ oob_probe_all_settled(const struct probe_ctx *pc, const struct probe_target *tar
 
 /* Receive replies for one time slice (until deadline), recording each that
  * matches a probe we sent: datagrams on the UDP sockets, and connect/send/read
- * progress on every live TCP probe connection. Returns true once every probed
- * target has settled (see oob_probe_all_settled). */
+ * progress on every live TCP probe connection, starting queued connects as
+ * slots free up. Returns true once every probed target has settled (see
+ * oob_probe_all_settled). */
 static bool
 oob_probe_receive_slice(struct probe_ctx *pc, const struct timeval *deadline,
                         const struct session_id *client_sid, const struct tls_wrap_ctx *wrap,
-                        const struct buffer *framed_probe, const struct probe_target *targets,
+                        const struct buffer *framed_probe, struct probe_target *targets,
                         struct oob_probe_result *results, int n)
 {
     while (true)
     {
-        if (oob_probe_all_settled(pc, targets, results, n))
+        if (oob_probe_all_settled(targets, results, n))
         {
             return true;
         }
+
+        /* fill freed connection slots from the queue before arming the fd sets */
+        oob_probe_tcp_refill(pc, targets, results);
 
         struct timeval tnow, timeout;
         openvpn_gettimeofday(&tnow, NULL);
@@ -674,11 +745,11 @@ oob_probe_receive_slice(struct probe_ctx *pc, const struct timeval *deadline,
             if (FD_ISSET(conn->sd, &writefds) || FD_ISSET(conn->sd, &exceptfds))
             {
                 /* on except, the SO_ERROR check inside settles the failure */
-                oob_probe_tcp_writable(conn, framed_probe);
+                oob_probe_tcp_writable(conn, framed_probe, targets);
             }
             else if (FD_ISSET(conn->sd, &readfds))
             {
-                oob_probe_tcp_readable(conn, client_sid, wrap, results);
+                oob_probe_tcp_readable(conn, client_sid, wrap, targets, results);
             }
         }
     }
@@ -709,7 +780,7 @@ oob_probe_resend_unanswered(const struct probe_ctx *pc, const struct buffer *pro
 static void
 oob_probe_collect(struct probe_ctx *pc, const struct buffer *probe,
                   const struct session_id *client_sid, const struct tls_wrap_ctx *wrap,
-                  const struct buffer *framed_probe, const struct probe_target *targets,
+                  const struct buffer *framed_probe, struct probe_target *targets,
                   struct oob_probe_result *results, int n)
 {
     const int slices = 1 + OOB_PROBE_RETRIES;
@@ -890,24 +961,25 @@ client_probe_and_order_remotes(struct context *c)
 
         if (is_tcp)
         {
-            /* One non-blocking connection per resolved address; the probe is
-             * written once each connect completes, inside the collect loop. */
-            int started = 0;
+            /* Store every resolved address; the addresses are queued after this
+             * loop and each is probed on its own non-blocking connection, started
+             * inside the collect loop as connection slots become free. */
+            int n_tcp_addr = 0;
             for (const struct addrinfo *a = ai; a; a = a->ai_next)
             {
-                if (oob_probe_tcp_connect_start(&pc, i, a->ai_addr, (socklen_t)a->ai_addrlen))
-                {
-                    started++;
-                }
+                n_tcp_addr++;
+            }
+            t->dests = gc_malloc(sizeof(*t->dests) * n_tcp_addr, true, &gc);
+            t->destlens = gc_malloc(sizeof(*t->destlens) * n_tcp_addr, true, &gc);
+            for (const struct addrinfo *a = ai; a; a = a->ai_next)
+            {
+                memcpy(&t->dests[t->n_dests], a->ai_addr, a->ai_addrlen);
+                t->destlens[t->n_dests] = (socklen_t)a->ai_addrlen;
+                t->n_dests++;
             }
             freeaddrinfo(ai);
 
-            if (started == 0)
-            {
-                msg(D_LOW, "server-probe: %s:%s: could not start a probe connection", ce->remote,
-                    ce->remote_port);
-                continue;
-            }
+            t->outstanding = t->n_dests;
             t->sent = true;
             sent_count++;
             continue;
@@ -951,6 +1023,37 @@ client_probe_and_order_remotes(struct context *c)
         openvpn_gettimeofday(&t->sent_at, NULL);
         t->sent = true;
         sent_count++;
+    }
+
+    /* Queue the TCP addresses round-robin by remote -- every remote's first
+     * address before any remote's second -- so a remote resolving to many
+     * addresses cannot starve the ones behind it. The collect loop dequeues
+     * into free connection slots. */
+    int total_tcp = 0;
+    int max_dests = 0;
+    for (int i = 0; i < l->len; i++)
+    {
+        if (targets[i].is_tcp && targets[i].sent)
+        {
+            total_tcp += targets[i].n_dests;
+            max_dests = (targets[i].n_dests > max_dests) ? targets[i].n_dests : max_dests;
+        }
+    }
+    if (total_tcp > 0)
+    {
+        pc.queue = gc_malloc(sizeof(*pc.queue) * total_tcp, false, &gc);
+        for (int r = 0; r < max_dests; r++)
+        {
+            for (int i = 0; i < l->len; i++)
+            {
+                if (targets[i].is_tcp && targets[i].sent && r < targets[i].n_dests)
+                {
+                    pc.queue[pc.queue_len].target = i;
+                    pc.queue[pc.queue_len].addr = r;
+                    pc.queue_len++;
+                }
+            }
+        }
     }
 
     if (sent_count > 0)
