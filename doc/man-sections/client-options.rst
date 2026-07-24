@@ -596,7 +596,7 @@ configuration.
   is :code:`120`. This timeout includes proxy and TCP connect timeouts.
 
 --server-probe args
-  Before the first connection attempt, probe all configured UDP remotes
+  Before the first connection attempt, probe all configured remotes
   out-of-band and reorder the connection list based on the replies.
 
   Valid syntaxes::
@@ -604,7 +604,7 @@ configuration.
      server-probe
      server-probe max-latency-diff
 
-  A small probe message is sent to every resolved address of every UDP
+  A small probe message is sent to every resolved address of every
   remote, and each answering server replies with its advertised priority
   and weight. Remotes are then reordered following DNS SRV (RFC 2782)
   semantics: servers that answered are tried before those that did not,
@@ -616,13 +616,32 @@ configuration.
   answering server is used, falling back to a built-in default of
   :code:`10` ms.
 
+  UDP remotes are probed with a single datagram per address. TCP remotes
+  are probed over a short-lived TCP connection per address, which is
+  closed after the reply; the round-trip time is measured from probe to
+  reply on the established connection, so the TCP handshake does not
+  count towards the measured latency. Probe connections are bounded by
+  the probe window only and do not honor ``--connect-timeout``. Probes
+  run in parallel, with TCP capped at 32 concurrent connections;
+  addresses beyond the cap are probed as earlier connections settle,
+  best-effort within the probe window.
+
   The probe carries the same control-channel wrapping as a normal
   connection (``--tls-auth``, ``--tls-crypt`` or ``--tls-crypt-v2``,
   when configured).
 
-  Only UDP remotes are probed; TCP remotes keep their configured
-  position. Probing runs once, before the first connection attempt.
-  See ``--server-probe-reply`` for the server side.
+  Remotes using ``tcp-server`` or reached through ``--http-proxy`` or
+  ``--socks-proxy`` are not probed and rank behind answering servers.
+  Starting the handshake from a probe reply applies to UDP remotes only;
+  a winning TCP remote is connected with a full reset exchange. Probing runs once, before
+  the first connection attempt. See ``--server-probe-reply`` for the
+  server side.
+
+  A TCP server that predates this feature does not answer probes: it
+  logs a TLS error and resets the probe connection, and the client
+  simply treats it as a non-responder. Note that on Windows a refused
+  TCP probe connection may take about a second to be reported by the
+  system, so it settles no faster than an unreachable one.
 
 --static-challenge args
   Enable static challenge/response protocol

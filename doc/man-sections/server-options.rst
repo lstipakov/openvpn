@@ -682,10 +682,13 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   priority value first, and distribute load between equally-good
   servers of the same priority proportionally to their weights.
 
-  All values are in the range :code:`0` to :code:`65535`. A UDP server
-  answers probes regardless of this option; replies are stateless,
-  replay-protected and rate-limited. The option only controls the
-  advertised values.
+  All values are in the range :code:`0` to :code:`65535`. A server
+  answers probes on both UDP and TCP listeners regardless of this
+  option; replies are stateless, replay-protected and rate-limited. The
+  option only controls the advertised values. On TCP the probe must be
+  the first packet of a fresh connection, and the server closes the
+  connection after replying, so a TCP reply never advertises a
+  connect_lifetime.
 
 --stale-routes-check args
   Remove routes which haven't had activity for ``n`` seconds (i.e. the ageing
