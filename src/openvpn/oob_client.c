@@ -62,6 +62,8 @@ struct probe_target
     struct sockaddr_storage *dests;
     socklen_t *destlens;
     int n_dests;
+    bool is_tcp;            /* probed over per-address TCP connections instead of the
+                             * shared UDP sockets; excluded from UDP resend/addr-match */
     bool sent;
     struct timeval sent_at; /* when the probe was sent, for RTT measurement */
 };
@@ -74,9 +76,39 @@ struct probe_target
 #define PROBE_AF_V6    1
 #define PROBE_AF_COUNT 2
 
+/* A TCP remote is probed with a full connection per resolved address: connect,
+ * send the length-prefixed probe, read the length-prefixed reply, close. The
+ * connects are non-blocking and run in parallel with each other and with the
+ * UDP probes, inside the same select loop and probe window. RTT is measured
+ * probe-to-reply (the connect is not counted), so TCP and UDP measurements are
+ * comparable. Bounded so the fd set stays well below every platform's select()
+ * limit (64 sockets per set on Windows, fd values < FD_SETSIZE elsewhere). */
+#define OOB_TCP_PROBE_MAX_CONNS 32
+
+enum oob_tcp_state
+{
+    OOB_TCP_CONNECTING,  /* non-blocking connect in flight: watch writable/except */
+    OOB_TCP_SENDING,     /* connected, framed probe not fully written: watch writable */
+    OOB_TCP_AWAIT_REPLY, /* probe sent: watch readable */
+    OOB_TCP_CLOSED,      /* settled (replied, failed or refused); sd closed */
+};
+
+struct oob_tcp_conn
+{
+    socket_descriptor_t sd;
+    enum oob_tcp_state state;
+    int target;                   /* index into targets[]/results[] */
+    struct sockaddr_storage dest; /* the one address this connection probes */
+    int tx_off;                   /* bytes of the framed probe already written */
+    struct timeval sent_at;       /* probe fully written -> RTT start */
+    struct oob_frame_reader rd;   /* exact-read reassembly of the framed reply */
+};
+
 struct probe_ctx
 {
     socket_descriptor_t sd[PROBE_AF_COUNT]; /* SOCKET_UNDEFINED if that AF is unavailable */
+    struct oob_tcp_conn *tcp;               /* gc array of OOB_TCP_PROBE_MAX_CONNS slots */
+    int n_tcp;                              /* slots in use */
 };
 
 /* af is an int (not sa_family_t) so callers can pass addrinfo::ai_family
@@ -179,6 +211,17 @@ oob_probe_sockets_close(struct probe_ctx *pc)
             pc->sd[i] = SOCKET_UNDEFINED;
         }
     }
+    /* TCP probe connections are never handed off -- always closed */
+    for (int k = 0; k < pc->n_tcp; k++)
+    {
+        if (pc->tcp[k].sd != SOCKET_UNDEFINED)
+        {
+            openvpn_close_socket(pc->tcp[k].sd);
+            pc->tcp[k].sd = SOCKET_UNDEFINED;
+        }
+        pc->tcp[k].state = OOB_TCP_CLOSED;
+    }
+    pc->n_tcp = 0;
 }
 
 /* Send the probe to every resolved address of t, each on the socket matching
@@ -205,8 +248,8 @@ oob_probe_send_target(const struct probe_ctx *pc, const struct buffer *probe,
     return any_sent;
 }
 
-/* Parse one received packet as a PROBE_REPLY, independent of how (and over
- * which transport) the packet was received.
+/* Parse one received packet as a PROBE_REPLY, shared by the UDP (datagram) and
+ * TCP (deframed stream packet) receive paths.
  *
  * The reply's own session id (the server's stateless SYN-cookie) follows the
  * opcode byte; it is captured into @p server_sid before read_control_auth()
@@ -263,7 +306,7 @@ oob_probe_reply_parse(uint8_t *data, int len, const struct session_id *client_si
 }
 
 /* Fill @p res from a validated reply: RTT measured from @p sent_at, and the
- * address that answered pinned for the connection (and the shortcut). */
+ * address that answered pinned for the connection (and the UDP shortcut). */
 static void
 oob_probe_record_result(struct oob_probe_result *res, const struct oob_probe_reply *reply,
                         const struct session_id *server_sid, const struct timeval *sent_at,
@@ -281,7 +324,7 @@ oob_probe_record_result(struct oob_probe_result *res, const struct oob_probe_rep
 }
 
 /* Parse one received datagram as a PROBE_REPLY and, if valid and matching one
- * of the probes we sent, record the reply in results. */
+ * of the UDP probes we sent, record the reply in results. */
 static void
 oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_sid,
                        const struct tls_wrap_ctx *base_wrap, const struct sockaddr_storage *from,
@@ -296,7 +339,8 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
 
     /* Match the reply's source address to one of the addresses we probed for a
      * remote. The first reply for a remote wins (a remote with several addresses
-     * may answer from more than one). */
+     * may answer from more than one). TCP targets have no probed datagram
+     * addresses (n_dests == 0), so they never match a UDP reply. */
     for (int i = 0; i < n; i++)
     {
         if (!targets[i].sent || results[i].responded)
@@ -320,29 +364,225 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
     }
 }
 
-/* Count how many of the probes we sent have been answered so far. */
-static int
-oob_count_answered(const struct probe_target *targets, const struct oob_probe_result *results,
-                   int n)
+/* Did the last socket call fail only because it would have blocked? */
+static bool
+oob_sock_would_block(void)
 {
-    int answered = 0;
+    const int err = openvpn_errno();
+#ifdef _WIN32
+    return err == WSAEWOULDBLOCK;
+#else
+    return err == EAGAIN || err == EWOULDBLOCK;
+#endif
+}
+
+static void
+oob_tcp_conn_close(struct oob_tcp_conn *conn)
+{
+    if (conn->sd != SOCKET_UNDEFINED)
+    {
+        openvpn_close_socket(conn->sd);
+        conn->sd = SOCKET_UNDEFINED;
+    }
+    conn->state = OOB_TCP_CLOSED;
+}
+
+/* Begin one non-blocking probe connect to @p dest for target @p target_idx.
+ * Returns true if a connection slot is now in flight (or already connected),
+ * false if the slot could not be used (cap reached, socket/connect failure). */
+static bool
+oob_probe_tcp_connect_start(struct probe_ctx *pc, int target_idx, const struct sockaddr *dest,
+                            socklen_t destlen)
+{
+    if (pc->n_tcp >= OOB_TCP_PROBE_MAX_CONNS)
+    {
+        msg(D_LOW, "server-probe: TCP probe connection cap (%d) reached, skipping an address",
+            OOB_TCP_PROBE_MAX_CONNS);
+        return false;
+    }
+
+    socket_descriptor_t sd = socket(dest->sa_family, SOCK_STREAM, IPPROTO_TCP);
+    if (sd == SOCKET_UNDEFINED)
+    {
+        return false;
+    }
+#ifndef _WIN32
+    if (sd >= FD_SETSIZE)
+    {
+        /* select() cannot watch this fd value; the probe runs at startup, so
+         * this only triggers in fd-exhausted environments */
+        openvpn_close_socket(sd);
+        return false;
+    }
+#endif
+    set_cloexec(sd);
+    set_nonblock(sd);
+
+    struct oob_tcp_conn *conn = &pc->tcp[pc->n_tcp];
+    CLEAR(*conn);
+    conn->sd = sd;
+    conn->target = target_idx;
+    memcpy(&conn->dest, dest, destlen);
+
+    if (connect(sd, dest, destlen) == 0)
+    {
+        conn->state = OOB_TCP_SENDING; /* connected instantly; send on first writable */
+    }
+    else
+    {
+        const int err = openvpn_errno();
+        if (
+#ifdef _WIN32
+            err != WSAEWOULDBLOCK
+#else
+            err != EINPROGRESS
+#endif
+        )
+        {
+            openvpn_close_socket(sd);
+            return false;
+        }
+        conn->state = OOB_TCP_CONNECTING;
+    }
+
+    pc->n_tcp++;
+    return true;
+}
+
+/* The connection became writable: complete the connect if one was in flight
+ * (checking its outcome via SO_ERROR, as openvpn_connect() does), then write
+ * the framed probe, resuming after a short write. Once the probe is fully
+ * written the RTT clock starts and the connection waits for the reply. */
+static void
+oob_probe_tcp_writable(struct oob_tcp_conn *conn, const struct buffer *framed_probe)
+{
+    if (conn->state == OOB_TCP_CONNECTING)
+    {
+        int val = 0;
+        socklen_t len = sizeof(val);
+        if (getsockopt(conn->sd, SOL_SOCKET, SO_ERROR, (void *)&val, &len) != 0 || val != 0)
+        {
+            oob_tcp_conn_close(conn); /* refused/unreachable: settled, no responder */
+            return;
+        }
+        conn->state = OOB_TCP_SENDING;
+    }
+
+    const int total = (int)BLEN(framed_probe);
+    while (conn->tx_off < total)
+    {
+        int n = (int)send(conn->sd, (const char *)BPTR(framed_probe) + conn->tx_off,
+                          total - conn->tx_off, 0);
+        if (n <= 0)
+        {
+            if (n < 0 && oob_sock_would_block())
+            {
+                return; /* stay in OOB_TCP_SENDING, resume on next writable */
+            }
+            oob_tcp_conn_close(conn);
+            return;
+        }
+        conn->tx_off += n;
+    }
+
+    openvpn_gettimeofday(&conn->sent_at, NULL);
+    conn->state = OOB_TCP_AWAIT_REPLY;
+}
+
+/* The connection became readable: collect the next chunk of the framed reply.
+ * On a complete frame, record the reply (first reply per target wins) and
+ * close -- one probe, one reply. A peer close, socket error or malformed frame
+ * settles the connection as a non-responder. */
+static void
+oob_probe_tcp_readable(struct oob_tcp_conn *conn, const struct session_id *client_sid,
+                       const struct tls_wrap_ctx *base_wrap, struct oob_probe_result *results)
+{
+    uint8_t *dst;
+    int want = oob_frame_reader_want(&conn->rd, &dst);
+    int n = (int)recv(conn->sd, (char *)dst, want, 0);
+    if (n <= 0)
+    {
+        if (n < 0 && oob_sock_would_block())
+        {
+            return;
+        }
+        oob_tcp_conn_close(conn); /* peer closed (e.g. no probe support) or error */
+        return;
+    }
+
+    switch (oob_frame_reader_advance(&conn->rd, n))
+    {
+        case OOB_FRAME_NEED_MORE:
+            return;
+
+        case OOB_FRAME_COMPLETE:
+        {
+            struct oob_probe_reply reply;
+            struct session_id server_sid;
+            if (!results[conn->target].responded
+                && oob_probe_reply_parse(conn->rd.pkt, (int)conn->rd.pkt_len, client_sid, base_wrap,
+                                         &reply, &server_sid))
+            {
+                oob_probe_record_result(&results[conn->target], &reply, &server_sid,
+                                        &conn->sent_at, &conn->dest);
+            }
+            oob_tcp_conn_close(conn);
+            return;
+        }
+
+        case OOB_FRAME_ERROR:
+        default:
+            oob_tcp_conn_close(conn);
+            return;
+    }
+}
+
+/* Has every probed target settled? A UDP target settles only by answering
+ * (datagrams may be lost, so we keep waiting for the window/retries); a TCP
+ * target also settles when all of its connections are closed (the transport is
+ * reliable -- a refused or reset connection will not answer later). */
+static bool
+oob_probe_all_settled(const struct probe_ctx *pc, const struct probe_target *targets,
+                      const struct oob_probe_result *results, int n)
+{
     for (int i = 0; i < n; i++)
     {
-        answered += (targets[i].sent && results[i].responded) ? 1 : 0;
+        if (!targets[i].sent || results[i].responded)
+        {
+            continue;
+        }
+        if (!targets[i].is_tcp)
+        {
+            return false;
+        }
+        for (int k = 0; k < pc->n_tcp; k++)
+        {
+            if (pc->tcp[k].target == i && pc->tcp[k].state != OOB_TCP_CLOSED)
+            {
+                return false;
+            }
+        }
     }
-    return answered;
+    return true;
 }
 
 /* Receive replies for one time slice (until deadline), recording each that
- * matches a probe we sent. Returns true if every sent probe has been answered. */
+ * matches a probe we sent: datagrams on the UDP sockets, and connect/send/read
+ * progress on every live TCP probe connection. Returns true once every probed
+ * target has settled (see oob_probe_all_settled). */
 static bool
-oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadline,
+oob_probe_receive_slice(struct probe_ctx *pc, const struct timeval *deadline,
                         const struct session_id *client_sid, const struct tls_wrap_ctx *wrap,
-                        const struct probe_target *targets, struct oob_probe_result *results, int n,
-                        int outstanding)
+                        const struct buffer *framed_probe, const struct probe_target *targets,
+                        struct oob_probe_result *results, int n)
 {
     while (true)
     {
+        if (oob_probe_all_settled(pc, targets, results, n))
+        {
+            return true;
+        }
+
         struct timeval tnow, timeout;
         openvpn_gettimeofday(&tnow, NULL);
         timeout.tv_sec = deadline->tv_sec - tnow.tv_sec;
@@ -357,8 +597,10 @@ oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadli
             return false; /* slice elapsed */
         }
 
-        fd_set readfds;
+        fd_set readfds, writefds, exceptfds;
         FD_ZERO(&readfds);
+        FD_ZERO(&writefds);
+        FD_ZERO(&exceptfds);
         socket_descriptor_t maxsd = 0;
         for (int i = 0; i < PROBE_AF_COUNT; i++)
         {
@@ -371,7 +613,36 @@ oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadli
                 }
             }
         }
-        if (openvpn_select((int)maxsd + 1, &readfds, NULL, NULL, &timeout) <= 0)
+        for (int k = 0; k < pc->n_tcp; k++)
+        {
+            struct oob_tcp_conn *conn = &pc->tcp[k];
+            switch (conn->state)
+            {
+                case OOB_TCP_CONNECTING:
+                    /* Winsock reports a failed non-blocking connect on the
+                     * except set, not the write set */
+                    openvpn_fd_set(conn->sd, &writefds);
+                    openvpn_fd_set(conn->sd, &exceptfds);
+                    break;
+
+                case OOB_TCP_SENDING:
+                    openvpn_fd_set(conn->sd, &writefds);
+                    break;
+
+                case OOB_TCP_AWAIT_REPLY:
+                    openvpn_fd_set(conn->sd, &readfds);
+                    break;
+
+                case OOB_TCP_CLOSED:
+                    continue;
+            }
+            if (conn->sd > maxsd)
+            {
+                maxsd = conn->sd;
+            }
+        }
+
+        if (openvpn_select((int)maxsd + 1, &readfds, &writefds, &exceptfds, &timeout) <= 0)
         {
             return false; /* slice timed out, or error */
         }
@@ -392,14 +663,30 @@ oob_probe_receive_slice(const struct probe_ctx *pc, const struct timeval *deadli
                 oob_probe_handle_reply(data, len, client_sid, wrap, &from, targets, results, n);
             }
         }
-        if (oob_count_answered(targets, results, n) >= outstanding)
+
+        for (int k = 0; k < pc->n_tcp; k++)
         {
-            return true; /* every probe we sent has been answered */
+            struct oob_tcp_conn *conn = &pc->tcp[k];
+            if (conn->state == OOB_TCP_CLOSED)
+            {
+                continue;
+            }
+            if (FD_ISSET(conn->sd, &writefds) || FD_ISSET(conn->sd, &exceptfds))
+            {
+                /* on except, the SO_ERROR check inside settles the failure */
+                oob_probe_tcp_writable(conn, framed_probe);
+            }
+            else if (FD_ISSET(conn->sd, &readfds))
+            {
+                oob_probe_tcp_readable(conn, client_sid, wrap, results);
+            }
         }
     }
 }
 
-/* Resend the probe to every remote that we probed but that has not answered. */
+/* Resend the probe to every UDP remote that we probed but that has not
+ * answered. TCP targets are excluded: the transport retransmits on its own,
+ * and their connections simply stay armed across slice boundaries. */
 static void
 oob_probe_resend_unanswered(const struct probe_ctx *pc, const struct buffer *probe,
                             const struct probe_target *targets,
@@ -407,30 +694,24 @@ oob_probe_resend_unanswered(const struct probe_ctx *pc, const struct buffer *pro
 {
     for (int i = 0; i < n; i++)
     {
-        if (targets[i].sent && !results[i].responded)
+        if (targets[i].sent && !targets[i].is_tcp && !results[i].responded)
         {
             oob_probe_send_target(pc, probe, &targets[i]);
         }
     }
 }
 
-/* Collect replies over the probe window, resending unanswered probes up to
+/* Collect replies over the probe window, resending unanswered UDP probes up to
  * OOB_PROBE_RETRIES times (UDP is lossy and a probe carries no retransmission
  * of its own). The window is split into equal slices, one per send round; after
  * each slice but the last we resend to whoever has not answered yet. Returns
- * once the window elapses or every sent probe has been answered. */
+ * once the window elapses or every probed target has settled. */
 static void
-oob_probe_collect(const struct probe_ctx *pc, const struct buffer *probe,
+oob_probe_collect(struct probe_ctx *pc, const struct buffer *probe,
                   const struct session_id *client_sid, const struct tls_wrap_ctx *wrap,
-                  const struct probe_target *targets, struct oob_probe_result *results, int n)
+                  const struct buffer *framed_probe, const struct probe_target *targets,
+                  struct oob_probe_result *results, int n)
 {
-    /* number of probes we actually sent: stop early once they all answer */
-    int want = 0;
-    for (int i = 0; i < n; i++)
-    {
-        want += targets[i].sent ? 1 : 0;
-    }
-
     const int slices = 1 + OOB_PROBE_RETRIES;
     const long slice_ms = OOB_PROBE_WINDOW_MS / slices;
 
@@ -446,9 +727,10 @@ oob_probe_collect(const struct probe_ctx *pc, const struct buffer *probe,
             deadline.tv_usec -= 1000000;
         }
 
-        if (oob_probe_receive_slice(pc, &deadline, client_sid, wrap, targets, results, n, want))
+        if (oob_probe_receive_slice(pc, &deadline, client_sid, wrap, framed_probe, targets, results,
+                                    n))
         {
-            return; /* all answered */
+            return; /* every target settled */
         }
 
         if (slice + 1 < slices)
@@ -504,6 +786,7 @@ client_probe_and_order_remotes(struct context *c)
     session_id_random(&client_sid);
 
     struct probe_ctx pc = { .sd = { SOCKET_UNDEFINED, SOCKET_UNDEFINED } };
+    pc.tcp = gc_malloc(sizeof(*pc.tcp) * OOB_TCP_PROBE_MAX_CONNS, true, &gc);
     if (oob_probe_sockets_open(&pc) == 0)
     {
         msg(D_LOW, "server-probe: could not open probe socket; using configured order");
@@ -551,6 +834,13 @@ client_probe_and_order_remotes(struct context *c)
         return;
     }
 
+    /* On TCP the same wrapped packet is preceded by the standard 16-bit length
+     * prefix (as link_socket_write_tcp() would). Frame a copy once; the
+     * unframed buffer stays untouched for UDP sends and resends. */
+    struct buffer framed_probe = alloc_buf_gc(BLEN(&probe) + (int)sizeof(uint16_t), &gc);
+    buf_write_u16(&framed_probe, (uint16_t)BLEN(&probe));
+    buf_copy(&framed_probe, &probe);
+
     const char *wrap_name = is_v2                                    ? "tls-crypt-v2"
                             : (tas->tls_wrap.mode == TLS_WRAP_CRYPT) ? "tls-crypt"
                             : (tas->tls_wrap.mode == TLS_WRAP_AUTH)  ? "tls-auth"
@@ -570,26 +860,62 @@ client_probe_and_order_remotes(struct context *c)
         {
             continue; /* nothing to probe (e.g. a connection block with no --remote) */
         }
-        if (!proto_is_udp(ce->proto))
+        const bool is_tcp = (ce->proto == PROTO_TCP_CLIENT);
+        if (!proto_is_udp(ce->proto) && !is_tcp)
         {
-            msg(D_LOW, "server-probe: %s:%s: skipping (not a UDP remote)", ce->remote,
+            msg(D_LOW, "server-probe: %s:%s: skipping (protocol cannot be probed)", ce->remote,
                 ce->remote_port);
+            continue;
+        }
+        if (is_tcp && (ce->http_proxy_options || ce->socks_proxy_server))
+        {
+            msg(D_LOW, "server-probe: %s:%s: skipping (probing through a proxy is not supported)",
+                ce->remote, ce->remote_port);
             continue;
         }
 
         struct addrinfo *ai = NULL;
-        int status = openvpn_getaddrinfo(GETADDR_RESOLVE | GETADDR_TRY_ONCE | GETADDR_DATAGRAM,
-                                         ce->remote, ce->remote_port, 0, NULL, AF_UNSPEC, &ai);
+        const unsigned int ga_flags =
+            GETADDR_RESOLVE | GETADDR_TRY_ONCE | (is_tcp ? 0 : GETADDR_DATAGRAM);
+        int status = openvpn_getaddrinfo(ga_flags, ce->remote, ce->remote_port, 0, NULL, AF_UNSPEC,
+                                         &ai);
         if (status != 0 || !ai)
         {
             msg(D_LOW, "server-probe: %s:%s: could not resolve", ce->remote, ce->remote_port);
             continue;
         }
 
+        struct probe_target *t = &targets[i];
+        t->is_tcp = is_tcp;
+
+        if (is_tcp)
+        {
+            /* One non-blocking connection per resolved address; the probe is
+             * written once each connect completes, inside the collect loop. */
+            int started = 0;
+            for (const struct addrinfo *a = ai; a; a = a->ai_next)
+            {
+                if (oob_probe_tcp_connect_start(&pc, i, a->ai_addr, (socklen_t)a->ai_addrlen))
+                {
+                    started++;
+                }
+            }
+            freeaddrinfo(ai);
+
+            if (started == 0)
+            {
+                msg(D_LOW, "server-probe: %s:%s: could not start a probe connection", ce->remote,
+                    ce->remote_port);
+                continue;
+            }
+            t->sent = true;
+            sent_count++;
+            continue;
+        }
+
         /* Collect every resolved address whose address family has a probe socket.
          * Each address is stored natively (no IPv4-mapping) and later probed on
          * its AF socket. Storage is sized to the resolved address count. */
-        struct probe_target *t = &targets[i];
         int n_addr = 0;
         for (const struct addrinfo *a = ai; a; a = a->ai_next)
         {
@@ -629,7 +955,8 @@ client_probe_and_order_remotes(struct context *c)
 
     if (sent_count > 0)
     {
-        oob_probe_collect(&pc, &probe, &client_sid, &tas->tls_wrap, targets, results, l->len);
+        oob_probe_collect(&pc, &probe, &client_sid, &tas->tls_wrap, &framed_probe, targets, results,
+                          l->len);
     }
 
     /* Log each remote's outcome while results[i] still maps to array[i]. */
@@ -683,7 +1010,13 @@ client_probe_and_order_remotes(struct context *c)
 
     /* Single-use, so the RFC's connect_lifetime expiry check is not needed yet:
      * we probe once (c->first_time) and arm only results[0]. */
-    bool probe_start = results[0].responded && results[0].reply.connect_lifetime > 0;
+
+    /* UDP only: the cookie is bound to a datagram source IP+port and the socket
+     * adopted below is the UDP probe socket. A TCP winner always does a full
+     * reset exchange -- its server advertises connect_lifetime 0 anyway, so this
+     * is defence in depth against a misbehaving server. */
+    bool probe_start = results[0].responded && results[0].reply.connect_lifetime > 0
+                       && proto_is_udp(l->array[0]->proto);
     bool dco_win_gate = false;
 #if defined(_WIN32)
     if (dco_enabled(&c->options))
@@ -725,6 +1058,11 @@ client_probe_and_order_remotes(struct context *c)
             msg(D_LOW, "server-probe: cannot start the handshake from a probe reply"
                        " with dco-win;"
                        " using a full handshake");
+        }
+        else if (!proto_is_udp(l->array[0]->proto))
+        {
+            msg(D_LOW, "server-probe: a TCP remote cannot start the handshake from a probe"
+                       " reply; using a full handshake");
         }
         else if (results[0].reply.connect_lifetime == 0)
         {
