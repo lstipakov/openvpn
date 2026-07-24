@@ -47,18 +47,17 @@
  * lost and the client simply retries -- an acceptable compromise that avoids
  * consuming server resources under attack.
  *
- * @param m       the server's multi_context
+ * @param c       the context that read the packet (m->top for UDP, where the
+ *                peer address is in c2.from; an instance context for TCP)
  * @param buf     the packet to send (built by a tls_*_standalone() helper)
  * @param prefix  msg() prefix to set for the duration of the send
  * @param detail  D_MULTI_DEBUG message describing the reply
  * @param sock    the socket to send the reply on
  */
 static void
-send_standalone_reply(struct multi_context *m, struct buffer *buf, const char *prefix,
+send_standalone_reply(struct context *c, struct buffer *buf, const char *prefix,
                       const char *detail, struct link_socket *sock)
 {
-    struct context *c = &m->top;
-
     /* dco-win server requires prepend with sockaddr, so preserve offset */
     ASSERT(buf_init(&c->c2.buffers->aux_buf, buf->offset));
     buf_copy(&c->c2.buffers->aux_buf, buf);
@@ -84,14 +83,15 @@ send_hmac_reset_packet(struct multi_context *m, struct tls_pre_decrypt_state *st
     struct buffer buf = tls_reset_standalone(&state->tls_wrap_tmp, tas, sid,
                                              &state->peer_session_id, header, request_resend_wkc);
 
-    send_standalone_reply(m, &buf, "Connection Attempt",
+    send_standalone_reply(&m->top, &buf, "Connection Attempt",
                           "Reset packet from client, sending HMAC based reset challenge", sock);
 }
 
 /* Send an out-of-band PROBE_REPLY back to the source of a SERVER_PROBE,
- * synchronously and without keeping any state, mirroring the reset path. */
+ * synchronously and without keeping any state, mirroring the reset path.
+ * c is the context that read the probe (see send_standalone_reply). */
 static void
-send_probe_reply(struct multi_context *m, struct tls_pre_decrypt_state *state,
+send_probe_reply(struct context *c, struct tls_pre_decrypt_state *state,
                  struct tls_auth_standalone *tas, const struct oob_probe_reply *reply,
                  struct session_id *own_sid, struct link_socket *sock)
 {
@@ -115,12 +115,52 @@ send_probe_reply(struct multi_context *m, struct tls_pre_decrypt_state *state,
      * P_CONTROL_OOB_V1 message. */
     struct buffer buf =
         tls_wrap_oob_standalone(&state->tls_wrap_tmp, tas, own_sid, &payload, P_CONTROL_OOB_V1);
-    send_standalone_reply(m, &buf, "Server Probe", "Server probe from client, sending probe reply",
+    send_standalone_reply(c, &buf, "Server Probe", "Server probe from client, sending probe reply",
                           sock);
 
     gc_free(&gc);
 }
 
+
+bool
+multi_answer_server_probe(struct multi_context *m, struct context *c,
+                          struct tls_pre_decrypt_state *state, struct link_socket *sock,
+                          enum first_packet_verdict verdict, uint16_t connect_lifetime)
+{
+    struct tls_auth_standalone *tas = m->top.c2.tls_auth_standalone;
+    hmac_ctx_t *hmac = m->top.c2.session_id_hmac;
+    int handwindow = m->top.options.handshake_window;
+
+    /* A tls-crypt-v2 client must resend the WKc if it later uses this reply
+     * to start a handshake, since we keep no state. */
+    uint32_t reply_flags =
+        (verdict == VERDICT_VALID_OOB_WKC_V1) ? OOB_PROBE_REPLY_FLAG_RESEND_WKC : 0;
+
+    /* what we advertise; oob_build_probe_reply() adds the peer's session id */
+    struct oob_probe_reply reply = {
+        .priority = (uint16_t)m->top.options.server_probe_reply_priority,
+        .weight = (uint16_t)m->top.options.server_probe_reply_weight,
+        .max_latency_diff = (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
+        .connect_lifetime = connect_lifetime,
+        .flags = reply_flags,
+    };
+    if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
+                               &state->peer_session_id, &reply))
+    {
+        /* malformed or replayed/stale probe: silently drop */
+        return false;
+    }
+
+    /* Our session id is a stateless SYN cookie (the same HMAC the three-way
+     * handshake uses): we keep no per-probe state, and the reply can later
+     * also serve as the server's CONTROL_HARD_RESET_SERVER_V2, so a client
+     * can start the handshake from it (the connect_lifetime advertisement). */
+    struct session_id sid =
+        calculate_session_id_hmac(state->peer_session_id, &c->c2.from.dest, hmac, handwindow, 0);
+
+    send_probe_reply(c, state, tas, &reply, &sid, sock);
+    return true;
+}
 
 /* Returns true if this packet should create a new session */
 static bool
@@ -244,11 +284,6 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
          * (read_control_auth has stripped the opcode, session id and any
          * tls-auth/tls-crypt wrapping). Answer it without creating a session. */
 
-        /* A tls-crypt-v2 client must resend the WKc if it later uses this reply
-         * to start a handshake, since we keep no state. */
-        uint32_t reply_flags =
-            (verdict == VERDICT_VALID_OOB_WKC_V1) ? OOB_PROBE_REPLY_FLAG_RESEND_WKC : 0;
-
         /* The client's third packet validates only while its SYN-cookie does, so
          * the advertised connect_lifetime is inferred (not configurable): the
          * guaranteed cookie window of ~handshake_window (2 quantised buckets; see
@@ -257,29 +292,7 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
          * server considers the reply valid.) */
         int connect_lifetime = 2 * ((handwindow + 1) / 2);
 
-        /* what we advertise; oob_build_probe_reply() adds the peer's session id */
-        struct oob_probe_reply reply = {
-            .priority = (uint16_t)m->top.options.server_probe_reply_priority,
-            .weight = (uint16_t)m->top.options.server_probe_reply_weight,
-            .max_latency_diff = (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
-            .connect_lifetime = (uint16_t)connect_lifetime,
-            .flags = reply_flags,
-        };
-        if (!oob_build_probe_reply(&state->newbuf, (uint64_t)now, (uint64_t)handwindow,
-                                   &state->peer_session_id, &reply))
-        {
-            /* malformed or replayed/stale probe: silently drop */
-            return false;
-        }
-
-        /* Our session id is a stateless SYN cookie (the same HMAC the three-way
-         * handshake uses): we keep no per-probe state, and the reply can later
-         * also serve as the server's CONTROL_HARD_RESET_SERVER_V2, so a client
-         * can start the handshake from it (the connect_lifetime advertisement). */
-        struct session_id sid =
-            calculate_session_id_hmac(state->peer_session_id, from, hmac, handwindow, 0);
-
-        send_probe_reply(m, state, tas, &reply, &sid, sock);
+        multi_answer_server_probe(m, &m->top, state, sock, verdict, (uint16_t)connect_lifetime);
 
         /* An OOB probe never creates a session */
         return false;

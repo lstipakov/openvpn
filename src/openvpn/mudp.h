@@ -29,8 +29,36 @@
 
 struct context;
 struct multi_context;
+struct tls_pre_decrypt_state;
 
 void multi_process_io_udp(struct multi_context *m, struct link_socket *sock, unsigned int rwflags);
+
+/**
+ * Answer a SERVER_PROBE whose wrapping has already been validated by
+ * tls_pre_decrypt_lite() (an OOB verdict), without creating any session state.
+ * Shared by the UDP pre-decrypt path and the TCP first-packet interception.
+ *
+ * The caller is responsible for rate limiting: the UDP path checks
+ * reflect_filter_rate_limit_check() with the reset verdicts, the TCP path
+ * before it intercepts.
+ *
+ * @param m                 the server's multi_context
+ * @param c                 the context that read the probe (m->top for UDP,
+ *                          the instance context for TCP): supplies the peer
+ *                          address (c2.from) and the reply buffer
+ * @param state             pre-decrypt state of the probe packet
+ * @param sock              the socket to send the reply on
+ * @param verdict           the OOB verdict; VERDICT_VALID_OOB_WKC_V1 makes the
+ *                          reply ask the client to resend its WKc
+ * @param connect_lifetime  seconds the reply stays valid as a handshake
+ *                          shortcut; 0 advertises "no shortcut offered"
+ *
+ * @return true if a reply was sent, false if the probe was dropped
+ *         (malformed or stale)
+ */
+bool multi_answer_server_probe(struct multi_context *m, struct context *c,
+                               struct tls_pre_decrypt_state *state, struct link_socket *sock,
+                               enum first_packet_verdict verdict, uint16_t connect_lifetime);
 /**************************************************************************/
 /**
  * Get, and if necessary create, the multi_instance associated with a
