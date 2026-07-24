@@ -165,6 +165,129 @@ test_probe_reply_wire_format(void **state)
     gc_free(&gc);
 }
 
+/* connect_lifetime = 0 (a TCP reply: no handshake shortcut offered) survives
+ * the write/read round trip like any other value. */
+static void
+test_probe_reply_zero_lifetime_roundtrip(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(128, &gc);
+
+    struct oob_probe_reply in = {
+        .priority = 10,
+        .weight = 100,
+        .connect_lifetime = 0,
+        .flags = 0,
+    };
+    memcpy(in.peer_session_id.id, "ABCDEFGH", SID_SIZE);
+
+    assert_true(oob_probe_reply_write(&buf, &in));
+
+    struct buffer value;
+    assert_true(ctrl_msg_find_tlv(&buf, OOB_TLV_PROBE_REPLY, &value));
+
+    struct oob_probe_reply out = { 0 };
+    assert_true(oob_probe_reply_read(&value, &out));
+    assert_int_equal(out.connect_lifetime, 0);
+
+    gc_free(&gc);
+}
+
+/* Feed @p len framed bytes to a frame reader, delivering at most @p chunk
+ * bytes per want/advance round. Returns the final status. */
+static enum oob_frame_status
+frame_reader_feed(struct oob_frame_reader *r, const uint8_t *data, int len, int chunk)
+{
+    int off = 0;
+    enum oob_frame_status status = OOB_FRAME_NEED_MORE;
+    while (off < len && status == OOB_FRAME_NEED_MORE)
+    {
+        uint8_t *dst;
+        int want = oob_frame_reader_want(r, &dst);
+        assert_true(want > 0);
+        int n = want < chunk ? want : chunk;
+        if (n > len - off)
+        {
+            n = len - off;
+        }
+        memcpy(dst, data + off, n);
+        off += n;
+        status = oob_frame_reader_advance(r, n);
+    }
+    return status;
+}
+
+/* A whole frame delivered in as few reads as the reader asks for. */
+static void
+test_frame_reader_whole(void **state)
+{
+    const uint8_t frame[] = { 0x00, 0x05, 'h', 'e', 'l', 'l', 'o' };
+    struct oob_frame_reader r = { 0 };
+
+    assert_int_equal(frame_reader_feed(&r, frame, sizeof(frame), 9999), OOB_FRAME_COMPLETE);
+    assert_int_equal(r.pkt_len, 5);
+    assert_memory_equal(r.pkt, "hello", 5);
+}
+
+/* One byte per read, including splitting the 2-byte length prefix. */
+static void
+test_frame_reader_byte_at_a_time(void **state)
+{
+    const uint8_t frame[] = { 0x00, 0x05, 'h', 'e', 'l', 'l', 'o' };
+    struct oob_frame_reader r = { 0 };
+
+    assert_int_equal(frame_reader_feed(&r, frame, sizeof(frame), 1), OOB_FRAME_COMPLETE);
+    assert_int_equal(r.pkt_len, 5);
+    assert_memory_equal(r.pkt, "hello", 5);
+}
+
+/* The want()/advance() contract across the header/payload boundary: the
+ * reader asks exactly for what is missing at every step. */
+static void
+test_frame_reader_split_across_header(void **state)
+{
+    const uint8_t frame[] = { 0x00, 0x03, 'a', 'b', 'c' };
+    struct oob_frame_reader r = { 0 };
+    uint8_t *dst;
+
+    assert_int_equal(oob_frame_reader_want(&r, &dst), 2);
+    memcpy(dst, frame, 1); /* half the header */
+    assert_int_equal(oob_frame_reader_advance(&r, 1), OOB_FRAME_NEED_MORE);
+
+    assert_int_equal(oob_frame_reader_want(&r, &dst), 1); /* other half */
+    memcpy(dst, frame + 1, 1);
+    assert_int_equal(oob_frame_reader_advance(&r, 1), OOB_FRAME_NEED_MORE);
+
+    assert_int_equal(oob_frame_reader_want(&r, &dst), 3); /* whole payload */
+    memcpy(dst, frame + 2, 2);                            /* ... but deliver only part of it */
+    assert_int_equal(oob_frame_reader_advance(&r, 2), OOB_FRAME_NEED_MORE);
+
+    assert_int_equal(oob_frame_reader_want(&r, &dst), 1); /* the remainder */
+    memcpy(dst, frame + 4, 1);
+    assert_int_equal(oob_frame_reader_advance(&r, 1), OOB_FRAME_COMPLETE);
+    assert_memory_equal(r.pkt, "abc", 3);
+}
+
+/* A zero length prefix is invalid (a packet always has at least an opcode). */
+static void
+test_frame_reader_zero_len(void **state)
+{
+    const uint8_t frame[] = { 0x00, 0x00 };
+    struct oob_frame_reader r = { 0 };
+
+    assert_int_equal(frame_reader_feed(&r, frame, sizeof(frame), 9999), OOB_FRAME_ERROR);
+}
+
+/* A length prefix beyond OOB_FRAME_MAX_LEN is invalid (not a probe reply). */
+static void
+test_frame_reader_oversize_len(void **state)
+{
+    const uint8_t frame[] = { 0x02, 0x00 }; /* 512 > 256 */
+    struct oob_frame_reader r = { 0 };
+
+    assert_int_equal(frame_reader_feed(&r, frame, sizeof(frame), 9999), OOB_FRAME_ERROR);
+}
+
 /* A TLV with a longer-than-known value must still parse: the known fields are
  * read and the trailing bytes are skipped (forward compatibility). */
 static void
@@ -667,6 +790,12 @@ main(void)
         cmocka_unit_test(test_probe_parameter_roundtrip),
         cmocka_unit_test(test_probe_reply_roundtrip),
         cmocka_unit_test(test_probe_reply_wire_format),
+        cmocka_unit_test(test_probe_reply_zero_lifetime_roundtrip),
+        cmocka_unit_test(test_frame_reader_whole),
+        cmocka_unit_test(test_frame_reader_byte_at_a_time),
+        cmocka_unit_test(test_frame_reader_split_across_header),
+        cmocka_unit_test(test_frame_reader_zero_len),
+        cmocka_unit_test(test_frame_reader_oversize_len),
         cmocka_unit_test(test_probe_parameter_forward_compat),
         cmocka_unit_test(test_probe_parameter_too_short),
         cmocka_unit_test(test_find_tlv_value_truncated),

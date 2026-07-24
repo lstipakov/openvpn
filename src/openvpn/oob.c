@@ -156,6 +156,45 @@ oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t windo
     return true;
 }
 
+int
+oob_frame_reader_want(struct oob_frame_reader *r, uint8_t **dst)
+{
+    if (r->hdr_read < (int)sizeof(r->hdr))
+    {
+        *dst = r->hdr + r->hdr_read;
+        return (int)sizeof(r->hdr) - r->hdr_read;
+    }
+    *dst = r->pkt + r->pkt_read;
+    return (int)r->pkt_len - r->pkt_read;
+}
+
+enum oob_frame_status
+oob_frame_reader_advance(struct oob_frame_reader *r, int n)
+{
+    ASSERT(n >= 0);
+    if (r->hdr_read < (int)sizeof(r->hdr))
+    {
+        ASSERT(n <= (int)sizeof(r->hdr) - r->hdr_read);
+        r->hdr_read += n;
+        if (r->hdr_read < (int)sizeof(r->hdr))
+        {
+            return OOB_FRAME_NEED_MORE;
+        }
+        r->pkt_len = (uint16_t)((r->hdr[0] << 8) | r->hdr[1]);
+        if (r->pkt_len == 0 || r->pkt_len > OOB_FRAME_MAX_LEN)
+        {
+            /* clamp so that a caller ignoring the error cannot make a later
+             * want() hand out more than the pkt buffer */
+            r->pkt_len = 0;
+            return OOB_FRAME_ERROR;
+        }
+        return OOB_FRAME_NEED_MORE;
+    }
+    ASSERT(n <= (int)r->pkt_len - r->pkt_read);
+    r->pkt_read += n;
+    return (r->pkt_read == (int)r->pkt_len) ? OOB_FRAME_COMPLETE : OOB_FRAME_NEED_MORE;
+}
+
 /* Base ordering: responders before non-responders, then by priority (lower
  * first), then by RTT (lower first), then by original index for determinism.
  * This groups responders into priority runs pre-sorted by RTT, which the

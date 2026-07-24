@@ -186,6 +186,65 @@ bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_se
 bool oob_build_probe_reply(struct buffer *probe_payload, uint64_t now, uint64_t window_secs,
                            const struct session_id *peer_sid, struct oob_probe_reply *reply);
 
+/*
+ * Exact-read reassembly of one length-prefixed packet from a TCP stream.
+ *
+ * On TCP every OpenVPN packet is preceded by a 16-bit big-endian length. The
+ * reader asks for exactly the bytes still missing -- it never over-reads, so
+ * nothing is left behind in userspace for a later consumer of the socket --
+ * and reassembles the packet across arbitrarily fragmented reads:
+ *
+ *     uint8_t *dst;
+ *     int want = oob_frame_reader_want(&r, &dst);
+ *     int n = recv(sd, dst, want, 0);
+ *     if (n > 0 && oob_frame_reader_advance(&r, n) == OOB_FRAME_COMPLETE)
+ *     {
+ *         ... r.pkt[0..r.pkt_len) holds one complete packet ...
+ *     }
+ */
+
+/* An OOB reply is small (opcode + session id + wrapping + a short TLV
+ * payload); anything larger than this is not a PROBE_REPLY. */
+#define OOB_FRAME_MAX_LEN 256
+
+enum oob_frame_status
+{
+    OOB_FRAME_ERROR = -1,    /**< invalid length prefix (0 or > OOB_FRAME_MAX_LEN) */
+    OOB_FRAME_NEED_MORE = 0, /**< frame incomplete, call want()/advance() again */
+    OOB_FRAME_COMPLETE = 1,  /**< pkt[0..pkt_len) holds one complete packet */
+};
+
+struct oob_frame_reader
+{
+    uint8_t hdr[2];                 /**< the 16-bit big-endian length prefix */
+    int hdr_read;                   /**< header bytes received so far */
+    uint16_t pkt_len;               /**< decoded packet length (valid once the header is complete) */
+    int pkt_read;                   /**< packet bytes received so far */
+    uint8_t pkt[OOB_FRAME_MAX_LEN]; /**< the packet, reassembled */
+};
+
+/**
+ * Where the next bytes of the frame go and how many are wanted. Zero-initialize
+ * the reader before the first call.
+ *
+ * @param r    the reader
+ * @param dst  set to the destination for the next received bytes
+ * @return the maximum number of bytes to receive into @p dst (the exact
+ *         remainder of the current header/packet section)
+ */
+int oob_frame_reader_want(struct oob_frame_reader *r, uint8_t **dst);
+
+/**
+ * Account for @p n bytes received into the destination returned by the last
+ * oob_frame_reader_want() call. @p n may be any value from 0 up to the
+ * returned maximum.
+ *
+ * @return OOB_FRAME_COMPLETE when the packet is fully reassembled,
+ *         OOB_FRAME_NEED_MORE while bytes are missing, or OOB_FRAME_ERROR on
+ *         an invalid length prefix (the reader is then unusable).
+ */
+enum oob_frame_status oob_frame_reader_advance(struct oob_frame_reader *r, int n);
+
 /* Candidate-band margin (ms) used when neither the client nor the server
  * specifies one. */
 #define OOB_DEFAULT_LATENCY_MARGIN_MS 10
