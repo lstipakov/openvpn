@@ -205,25 +205,38 @@ oob_probe_send_target(const struct probe_ctx *pc, const struct buffer *probe,
     return any_sent;
 }
 
-/* Parse one received datagram as a PROBE_REPLY and, if valid and matching one
- * of the probes we sent, record the reply in results. */
-static void
-oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_sid,
-                       const struct tls_wrap_ctx *base_wrap, const struct sockaddr_storage *from,
-                       const struct probe_target *targets, struct oob_probe_result *results, int n)
+/* Parse one received packet as a PROBE_REPLY, independent of how (and over
+ * which transport) the packet was received.
+ *
+ * The reply's own session id (the server's stateless SYN-cookie) follows the
+ * opcode byte; it is captured into @p server_sid before read_control_auth()
+ * strips it, since a client may reuse it to skip to the third handshake packet
+ * (the connect_lifetime shortcut). The reply is unwrapped with the same
+ * control-channel path the server used to wrap it: this verifies the tls-auth
+ * HMAC / decrypts tls-crypt, and (in all modes) strips the opcode + server
+ * session id. With no tls-auth/tls-crypt it just strips those header bytes.
+ * read_control_auth() mutates the wrapping context, so a per-packet copy is
+ * used (as tls_pre_decrypt_lite() does on the server).
+ *
+ * @return true if the packet is a well-formed reply that echoes our probe's
+ *         session id (spoofed replies are rejected), false otherwise
+ */
+static bool
+oob_probe_reply_parse(uint8_t *data, int len, const struct session_id *client_sid,
+                      const struct tls_wrap_ctx *base_wrap, struct oob_probe_reply *reply,
+                      struct session_id *server_sid)
 {
     /* Need at least the opcode byte and the session id. */
     if (len < 1 + (int)SID_SIZE || (data[0] >> P_OPCODE_SHIFT) != P_CONTROL_OOB_V1)
     {
-        return;
+        return false;
     }
 
     /* The reply's own session id (the server's stateless SYN-cookie) follows the
      * opcode byte. Capture it before read_control_auth() strips it: a client may
      * reuse it to start the handshake from this reply (the connect_lifetime
      * advertisement). */
-    struct session_id server_sid;
-    memcpy(server_sid.id, data + 1, SID_SIZE);
+    memcpy(server_sid->id, data + 1, SID_SIZE);
 
     struct buffer buf;
     buf_set_read(&buf, data, (size_t)len);
@@ -231,25 +244,52 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
     /* Unwrap the reply with the same control-channel path the server used to
      * wrap it: this verifies the tls-auth HMAC / decrypts tls-crypt, and (in all
      * modes) strips the opcode + server session id, leaving buf at the TLV
-     * payload. With no tls-auth/tls-crypt it just strips those header bytes, as
-     * before. read_control_auth() mutates the wrapping context, so we work on a
+     * payload. read_control_auth() mutates the wrapping context, so we work on a
      * per-packet copy (as tls_pre_decrypt_lite() does on the server). The peer
      * address is only used for log messages, and tls_options only for
      * tls-crypt-v2 metadata checks, so both are passed as NULL. */
     struct tls_wrap_ctx wrap = *base_wrap;
     if (!read_control_auth(&buf, &wrap, NULL, NULL))
     {
-        return; /* not for us, or failed authentication */
+        return false; /* not for us, or failed authentication */
     }
 
-    struct oob_probe_reply reply;
-    if (!oob_client_reply_read(&buf, &reply))
+    if (!oob_client_reply_read(&buf, reply))
     {
-        return;
+        return false;
     }
 
-    /* Reject spoofed replies: the reply must echo our probe's session id. */
-    if (!session_id_equal(&reply.peer_session_id, client_sid))
+    return session_id_equal(&reply->peer_session_id, client_sid);
+}
+
+/* Fill @p res from a validated reply: RTT measured from @p sent_at, and the
+ * address that answered pinned for the connection (and the shortcut). */
+static void
+oob_probe_record_result(struct oob_probe_result *res, const struct oob_probe_reply *reply,
+                        const struct session_id *server_sid, const struct timeval *sent_at,
+                        const struct sockaddr_storage *responder)
+{
+    struct timeval rcv;
+    openvpn_gettimeofday(&rcv, NULL);
+    long ms = (long)(rcv.tv_sec - sent_at->tv_sec) * 1000 + (rcv.tv_usec - sent_at->tv_usec) / 1000;
+
+    res->responded = true;
+    res->rtt_ms = (ms > 0) ? (unsigned int)ms : 0;
+    res->server_sid = *server_sid;
+    res->responder = *responder;
+    res->reply = *reply;
+}
+
+/* Parse one received datagram as a PROBE_REPLY and, if valid and matching one
+ * of the probes we sent, record the reply in results. */
+static void
+oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_sid,
+                       const struct tls_wrap_ctx *base_wrap, const struct sockaddr_storage *from,
+                       const struct probe_target *targets, struct oob_probe_result *results, int n)
+{
+    struct oob_probe_reply reply;
+    struct session_id server_sid;
+    if (!oob_probe_reply_parse(data, len, client_sid, base_wrap, &reply, &server_sid))
     {
         return;
     }
@@ -275,16 +315,7 @@ oob_probe_handle_reply(uint8_t *data, int len, const struct session_id *client_s
             continue;
         }
 
-        struct timeval rcv;
-        openvpn_gettimeofday(&rcv, NULL);
-        long ms = (long)(rcv.tv_sec - targets[i].sent_at.tv_sec) * 1000
-                  + (rcv.tv_usec - targets[i].sent_at.tv_usec) / 1000;
-
-        results[i].responded = true;
-        results[i].rtt_ms = (ms > 0) ? (unsigned int)ms : 0;
-        results[i].server_sid = server_sid;
-        results[i].responder = *from; /* pin the connection to the address that answered */
-        results[i].reply = reply;
+        oob_probe_record_result(&results[i], &reply, &server_sid, &targets[i].sent_at, from);
         break;
     }
 }
