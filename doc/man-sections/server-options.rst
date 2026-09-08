@@ -662,6 +662,39 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   Pushing of the ``--tun-ipv6`` directive is done for older clients which
   require an explicit ``--tun-ipv6`` in their configuration.
 
+--server-probe-reply args
+  Set the values a server advertises in its replies to out-of-band
+  probes from clients using ``--server-probe``.
+
+  Valid syntaxes::
+
+     server-probe-reply max-latency-diff
+     server-probe-reply max-latency-diff weight
+     server-probe-reply max-latency-diff weight priority
+
+  ``max-latency-diff`` is the candidate-band margin in milliseconds that
+  *this* server announces. When it is the fastest server of its priority
+  group, a probing client treats every server within that margin of it as
+  equal and picks among them by ``weight``; the margin of a slower server
+  has no effect. The default is :code:`10`; :code:`0` means only servers
+  tying it exactly count as equal, and ``weight`` still distributes load
+  between those. A client that sets its own margin with ``--server-probe``
+  overrides every advertised value.
+
+  ``weight`` (default :code:`50`) and ``priority`` (default :code:`100`)
+  have DNS SRV (RFC 2782) semantics: clients try servers with a lower
+  priority value first (lower is better), and distribute load between
+  equally-good servers of the same priority proportionally to their
+  weights.
+
+  All values are in the range :code:`0` to :code:`65535`. A UDP server
+  answers probes by default, whether or not this option is given, and
+  the values above only change what it advertises. Replies are stateless
+  and rate-limited. A probe whose timestamp is more than ``--hand-window``
+  away from the server's clock is answered only within a small budget, a
+  twentieth of ``--connect-freq-initial``, so a client with a wrong clock
+  can still probe while a replayed probe is answered at most that often.
+
 --stale-routes-check args
   Remove routes which haven't had activity for ``n`` seconds (i.e. the ageing
   time).  This check is run every ``t`` seconds (i.e. check interval).

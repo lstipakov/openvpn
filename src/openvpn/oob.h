@@ -188,6 +188,12 @@ enum oob_probe_verdict
 enum oob_probe_verdict oob_server_probe_check(struct buffer *probe_payload, uint64_t now,
                                               uint64_t window_secs, uint32_t *message_id);
 
+/* Candidate-band margin (ms) a server advertises when --server-probe-reply does
+ * not set one. Announcing 0 is a valid choice with a distinct meaning -- only
+ * servers tying the lowest latency are candidates -- so an unconfigured server
+ * has to announce something else; the spec suggests 10 to 20 ms. */
+#define OOB_DEFAULT_LATENCY_MARGIN_MS 10
+
 /* Outcome of probing one remote, used to order remotes best-first. @index is
  * the caller's identifier for the remote (e.g. its position in the connection
  * list); priority/weight are only meaningful when @responded is true. */

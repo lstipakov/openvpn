@@ -1,5 +1,15 @@
 # Overview of changes in 2.8
 
+## New features
+
+* **Out-of-band server probing and server-controlled selection**
+
+  With `--server-probe`, a client probes all configured UDP remotes before
+  connecting and reorders them based on the replies: reachable servers are tried
+  first, ordered by server-advertised priority, measured latency and advertised
+  weight with DNS-SRV-like semantics. Servers advertise these values with
+  `--server-probe-reply`.
+
 ## User-visible Changes
 
 * **Parsing Distinguished Names in certificates**
