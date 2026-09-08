@@ -662,6 +662,34 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   Pushing of the ``--tun-ipv6`` directive is done for older clients which
   require an explicit ``--tun-ipv6`` in their configuration.
 
+--server-probe-reply args
+  Set the values a server advertises in its replies to out-of-band
+  probes from clients using ``--server-probe``.
+
+  Valid syntaxes::
+
+     server-probe-reply max-latency-diff
+     server-probe-reply max-latency-diff weight
+     server-probe-reply max-latency-diff weight priority
+
+  ``max-latency-diff`` is the candidate-band margin in milliseconds: a
+  probing client treats servers of the same priority whose round-trip
+  time is within this margin of the fastest one as equally good. The
+  default is :code:`10`; :code:`0` asks clients to pick strictly by
+  latency, so only the fastest server of a priority group is treated as
+  best and ``weight`` no longer distributes load between them. A client
+  that sets its own margin with ``--server-probe`` overrides this.
+
+  ``weight`` (default :code:`50`) and ``priority`` (default :code:`100`)
+  have DNS SRV (RFC 2782) semantics: clients try servers with a lower
+  priority value first, and distribute load between equally-good
+  servers of the same priority proportionally to their weights.
+
+  All values are in the range :code:`0` to :code:`65535`. A UDP server
+  answers probes regardless of this option; replies are stateless,
+  replay-protected and rate-limited. The option only controls the
+  advertised values.
+
 --stale-routes-check args
   Remove routes which haven't had activity for ``n`` seconds (i.e. the ageing
   time).  This check is run every ``t`` seconds (i.e. check interval).

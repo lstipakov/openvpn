@@ -244,8 +244,13 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
             return false;
         }
 
-        /* the reply echoes the peer's session id */
-        struct oob_probe_reply reply = { .peer_session_id = state->peer_session_id };
+        /* the echo of the peer's session id, plus what we advertise */
+        struct oob_probe_reply reply = {
+            .peer_session_id = state->peer_session_id,
+            .priority = (uint16_t)m->top.options.server_probe_reply_priority,
+            .weight = (uint16_t)m->top.options.server_probe_reply_weight,
+            .max_latency_diff = (uint16_t)m->top.options.server_probe_reply_max_latency_diff,
+        };
 
         /* Our session id is a stateless SYN cookie (the same HMAC the three-way
          * handshake uses): we keep no per-probe state, and the reply can later

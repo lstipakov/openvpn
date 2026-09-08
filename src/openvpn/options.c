@@ -44,6 +44,7 @@
 #include "ssl.h"
 #include "ssl_ncp.h"
 #include "options.h"
+#include "oob.h"
 #include "misc.h"
 #include "socket_util.h"
 #include "packet_id.h"
@@ -480,6 +481,8 @@ static const char usage_message[] =
     "--auth-user-pass-optional : Allow connections by clients that don't\n"
     "                  specify a username/password.\n"
     "--client-to-client : Internally route client-to-client traffic.\n"
+    "--server-probe-reply m [w [p]] : Advertise latency margin m (ms), weight w\n"
+    "                  and priority p in replies to --server-probe clients.\n"
     "--duplicate-cn  : Allow multiple clients with the same common name to\n"
     "                  concurrently connect.\n"
     "--client-connect cmd : Run command cmd on client connection.\n"
@@ -813,10 +816,15 @@ init_options(struct options *o)
     o->ce.proto = PROTO_UDP;
     o->ce.af = AF_UNSPEC;
 
-    /* The client latency margin is -1 = "not set": the client's value is
-     * authoritative when given, otherwise each server's advertised margin (or
-     * the built-in default) applies. */
+    /* server-probe defaults. The client latency margin is -1 = "not set": the
+     * client's value is authoritative when given, otherwise each server's
+     * advertised margin applies. An (unconfigured) server advertises weight 50 /
+     * priority 100 and a margin of OOB_DEFAULT_LATENCY_MARGIN_MS -- announcing 0
+     * would ask clients to pick strictly by latency and never by weight. */
     o->server_probe_latency_margin = -1;
+    o->server_probe_reply_weight = 50;
+    o->server_probe_reply_priority = 100;
+    o->server_probe_reply_max_latency_diff = OOB_DEFAULT_LATENCY_MARGIN_MS;
     o->ce.bind_ipv6_only = false;
     o->ce.connect_retry_seconds = 1;
     o->ce.connect_retry_seconds_max = 300;
@@ -2005,6 +2013,7 @@ options_postprocess_verify_ce(const struct options *options, const struct connec
         MUST_BE_UNDEF(duplicate_cn, "duplicate-cn");
         MUST_BE_UNDEF(cf_max, "connect-freq");
         MUST_BE_UNDEF(cf_per, "connect-freq");
+        MUST_BE_UNDEF(server_probe_reply_defined, "server-probe-reply");
         MUST_BE_FALSE(options->ssl_flags
                           & (SSLF_CLIENT_CERT_NOT_REQUIRED | SSLF_CLIENT_CERT_OPTIONAL),
                       "verify-client-cert");
@@ -5107,6 +5116,27 @@ add_option(struct options *options, char *p[], bool is_inline, const char *file,
             }
             options->server_probe_latency_margin = margin;
         }
+    }
+    else if (streq(p[0], "server-probe-reply") && p[1] && !p[4])
+    {
+        VERIFY_PERMISSION(OPT_P_GENERAL);
+        /* --server-probe-reply max-latency-diff [weight] [prio] */
+        options->server_probe_reply_defined = true;
+        int vals[3] = { options->server_probe_reply_max_latency_diff,
+                        options->server_probe_reply_weight,
+                        options->server_probe_reply_priority };
+        for (int i = 0; i < 3 && p[i + 1]; i++)
+        {
+            vals[i] = positive_atoi(p[i + 1], msglevel);
+            if (vals[i] > 0xffff)
+            {
+                msg(msglevel, "--server-probe-reply: values must be 0 to 65535");
+                goto err;
+            }
+        }
+        options->server_probe_reply_max_latency_diff = vals[0];
+        options->server_probe_reply_weight = vals[1];
+        options->server_probe_reply_priority = vals[2];
     }
     else if (streq(p[0], "nice") && p[1] && !p[2])
     {
