@@ -258,8 +258,13 @@ do_pre_decrypt_check(struct multi_context *m, struct tls_pre_decrypt_state *stat
             return false;
         }
 
-        /* the reply echoes the probe's request_id */
-        struct oob_probe_reply reply = { .request_id = req.request_id };
+        /* the echo of the probe's request_id, plus what we advertise */
+        struct oob_probe_reply reply = {
+            .request_id = req.request_id,
+            .priority = m->top.options.server_probe_reply_priority,
+            .weight = m->top.options.server_probe_reply_weight,
+            .max_latency_diff = m->top.options.server_probe_reply_max_latency_diff,
+        };
 
         /* Our session id is a stateless SYN cookie (the same HMAC the three-way
          * handshake uses): we keep no per-probe state, and the reply can later
