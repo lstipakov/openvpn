@@ -695,6 +695,12 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   twentieth of ``--connect-freq-initial``, so a client with a wrong clock
   can still probe while a replayed probe is answered at most that often.
 
+  For a client that supports it, the reply also serves as this server's
+  reset packet, letting the client start its handshake from it and save a
+  round trip. The reply states how long it may be used this way, derived
+  from ``--hand-window``: lowering ``--hand-window`` shortens that window
+  as well.
+
 --stale-routes-check args
   Remove routes which haven't had activity for ``n`` seconds (i.e. the ageing
   time).  This check is run every ``t`` seconds (i.e. check interval).

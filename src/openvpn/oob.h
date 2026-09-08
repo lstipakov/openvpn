@@ -167,6 +167,12 @@ bool oob_client_reply_read(struct buffer *payload, uint32_t *response_id,
  */
 bool oob_timestamp_in_window(uint64_t probe_ts, uint64_t now, uint64_t window_secs);
 
+/* probe_reply flags (the reply TLV's 32-bit flags field) */
+/* bit 0: the client must resend the wrapped client key (via P_CONTROL_WKC_V1)
+ * when it completes the handshake started from this reply. Set
+ * by a tls-crypt-v2 server, which is stateless and discarded the WKc. */
+#define OOB_PROBE_REPLY_FLAG_RESEND_WKC 0x1
+
 enum oob_probe_verdict
 {
     OOB_PROBE_INVALID, /**< no valid probe_parameter: drop */
