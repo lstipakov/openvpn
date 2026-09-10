@@ -565,7 +565,7 @@ create_socket_tcp(struct addrinfo *addrinfo)
 }
 
 static socket_descriptor_t
-create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags)
+create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags, bool optional)
 {
     socket_descriptor_t sd;
 
@@ -575,7 +575,8 @@ create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags)
     if ((sd = socket(addrinfo->ai_family, addrinfo->ai_socktype, addrinfo->ai_protocol))
         == SOCKET_UNDEFINED)
     {
-        msg(M_ERR, "UDP: Cannot create UDP/UDP6 socket");
+        msg(optional ? D_LOW | M_ERRNO : M_ERR, "UDP: Cannot create UDP/UDP6 socket");
+        return SOCKET_UNDEFINED;
     }
 #if ENABLE_IP_PKTINFO
     else if (flags & SF_USE_IP_PKTINFO)
@@ -636,12 +637,70 @@ bind_local(struct link_socket *sock)
     }
 }
 
+/* The per-socket options every link socket gets right after creation. */
+static void
+socket_apply_options(socket_descriptor_t sd, const struct socket_buffer_size *sbs, int mark,
+                     const char *bind_dev)
+{
+    /* set socket buffers based on --sndbuf and --rcvbuf options */
+    socket_set_buffers(sd, sbs, true);
+
+    /* set socket to --mark packets with given value */
+    socket_set_mark(sd, mark);
+
+#if defined(TARGET_LINUX)
+    if (bind_dev)
+    {
+        msg(M_INFO, "Using bind-dev %s", bind_dev);
+        /* Note: We verify strlen of bind_dev in options parsing */
+        if (setsockopt(sd, SOL_SOCKET, SO_BINDTODEVICE, bind_dev, (socklen_t)(strlen(bind_dev) + 1))
+            != 0)
+        {
+            msg(M_WARN | M_ERRNO, "WARN: setsockopt SO_BINDTODEVICE=%s failed", bind_dev);
+        }
+    }
+#else
+    (void)bind_dev;
+#endif
+}
+
+socket_descriptor_t
+create_socket_udp_configured(sa_family_t af, unsigned int sockflags, const struct socket_buffer_size *sbs,
+                             int mark, const char *bind_dev, struct addrinfo *bind_addr,
+                             bool bind_ipv6_only, bool optional)
+{
+    struct addrinfo ai = { .ai_family = af, .ai_socktype = SOCK_DGRAM, .ai_protocol = IPPROTO_UDP };
+    socket_descriptor_t sd = create_socket_udp(&ai, sockflags, optional);
+
+    if (sd == SOCKET_UNDEFINED)
+    {
+        return SOCKET_UNDEFINED;
+    }
+
+    socket_apply_options(sd, sbs, mark, bind_dev);
+    if (bind_addr)
+    {
+        socket_bind(sd, bind_addr, af, "TCP/UDP", bind_ipv6_only);
+    }
+    return sd;
+}
+
 static void
 create_socket(struct link_socket *sock, struct addrinfo *addr)
 {
+    /* Set af field of sock->info, so it always reflects the address family
+     * of the created socket */
+    sock->info.af = (sa_family_t)addr->ai_family;
+
     if (addr->ai_protocol == IPPROTO_UDP || addr->ai_socktype == SOCK_DGRAM)
     {
-        sock->sd = create_socket_udp(addr, sock->sockflags);
+        /* With a SOCKS proxy the local bind goes on the control socket instead
+         * (see bind_local()), so the UDP socket is created unbound then. */
+        struct addrinfo *bind_addr =
+            (sock->bind_local && !sock->socks_proxy) ? sock->info.lsa->bind_local : NULL;
+        sock->sd = create_socket_udp_configured(sock->info.af, sock->sockflags, &sock->socket_buffer_sizes,
+                                                sock->mark, sock->bind_dev, bind_addr,
+                                                sock->info.bind_ipv6_only, false);
         sock->sockflags |= SF_GETADDRINFO_DGRAM;
 
         /* Assume that control socket and data socket to the socks proxy
@@ -655,41 +714,19 @@ create_socket(struct link_socket *sock, struct addrinfo *addr)
             addrinfo_tmp.ai_socktype = SOCK_STREAM;
             addrinfo_tmp.ai_protocol = IPPROTO_TCP;
             sock->ctrl_sd = create_socket_tcp(&addrinfo_tmp);
+            bind_local(sock);
         }
     }
     else if (addr->ai_protocol == IPPROTO_TCP || addr->ai_socktype == SOCK_STREAM)
     {
         sock->sd = create_socket_tcp(addr);
+        socket_apply_options(sock->sd, &sock->socket_buffer_sizes, sock->mark, sock->bind_dev);
+        bind_local(sock);
     }
     else
     {
         ASSERT(0);
     }
-    /* Set af field of sock->info, so it always reflects the address family
-     * of the created socket */
-    sock->info.af = (sa_family_t)addr->ai_family;
-
-    /* set socket buffers based on --sndbuf and --rcvbuf options */
-    socket_set_buffers(sock->sd, &sock->socket_buffer_sizes, true);
-
-    /* set socket to --mark packets with given value */
-    socket_set_mark(sock->sd, sock->mark);
-
-#if defined(TARGET_LINUX)
-    if (sock->bind_dev)
-    {
-        msg(M_INFO, "Using bind-dev %s", sock->bind_dev);
-        /* Note: We verify strlen of bind_dev in options parsing */
-        if (setsockopt(sock->sd, SOL_SOCKET, SO_BINDTODEVICE, sock->bind_dev,
-                       (socklen_t)(strlen(sock->bind_dev) + 1))
-            != 0)
-        {
-            msg(M_WARN | M_ERRNO, "WARN: setsockopt SO_BINDTODEVICE=%s failed", sock->bind_dev);
-        }
-    }
-#endif
-
-    bind_local(sock);
 }
 
 #ifdef TARGET_ANDROID

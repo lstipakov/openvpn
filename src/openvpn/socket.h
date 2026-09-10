@@ -401,6 +401,19 @@ void link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int s
 
 socket_descriptor_t create_socket_tcp(struct addrinfo *);
 
+/**
+ * Create a UDP socket for @p af set up the way a link socket is: --sndbuf/--rcvbuf,
+ * --mark, --bind-dev and, when @p bind_addr is given, the local bind (IPV6_V6ONLY
+ * per @p bind_ipv6_only). Shared by create_socket() and the --server-probe sockets,
+ * so a probe socket is the connection socket it may become. A failed bind is
+ * fatal; with @p optional a socket the host cannot create is not, so
+ * --server-probe can skip that address family (SOCKET_UNDEFINED is returned).
+ */
+socket_descriptor_t create_socket_udp_configured(sa_family_t af, unsigned int sockflags,
+                                                 const struct socket_buffer_size *sbs, int mark,
+                                                 const char *bind_dev, struct addrinfo *bind_addr,
+                                                 bool bind_ipv6_only, bool optional);
+
 socket_descriptor_t socket_do_accept(socket_descriptor_t sd, struct link_socket_actual *act,
                                      const bool nowait);
 
