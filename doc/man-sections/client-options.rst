@@ -568,6 +568,17 @@ configuration.
   By default, ``--resolv-retry infinite`` is enabled. You can disable by
   setting n=0.
 
+--preresolve
+  Resolve configured ``--remote``, ``--local``, ``--http-proxy``, and
+  ``--socks-proxy`` hostnames at startup before opening the connection.
+
+  The resolved addresses are cached and reused for reconnects, so OpenVPN
+  will not re-resolve these hostnames after the initial connection attempt.
+  This can help configurations where DNS is unavailable while the VPN is
+  down, but can be counter-productive for dynamic DNS names or when roaming
+  between networks where address family availability changes, such as
+  DNS64/NAT64.
+
 --single-session
   After initially connecting to a remote peer, disallow any new
   connections. Using this option means that a remote peer cannot connect,
@@ -583,6 +594,44 @@ configuration.
   When connecting to a remote server do not wait for more than ``n``
   seconds for a response before trying the next server. The default value
   is :code:`120`. This timeout includes proxy and TCP connect timeouts.
+
+--server-probe args
+  Before the first connection attempt, probe all configured UDP remotes
+  out-of-band and reorder the connection list based on the replies.
+
+  Valid syntaxes::
+
+     server-probe
+     server-probe max-latency-diff
+
+  A small probe message is sent to every resolved address of every UDP
+  remote, and each answering server replies with its advertised priority
+  and weight. Remotes are then reordered following DNS SRV (RFC 2782)
+  semantics: servers that answered are tried before those that did not,
+  grouped by priority (lowest first); within a priority group, servers
+  whose measured round-trip time is within ``max-latency-diff``
+  milliseconds of the fastest one are picked by weighted-random
+  selection, the others follow in round-trip-time order. When
+  ``max-latency-diff`` is not given, the margin advertised by the
+  answering server applies; a server advertising :code:`0` asks to be
+  compared on latency alone, so only the fastest server of its priority
+  group is treated as best.
+
+  The probe carries the same control-channel wrapping as a normal
+  connection (``--tls-auth``, ``--tls-crypt`` or ``--tls-crypt-v2``,
+  when configured).
+
+  Only UDP remotes are probed, and only when there are at least two
+  remotes; remotes reached through a SOCKS proxy are not probed. All
+  probed remotes must share the local bind settings (``--local``,
+  ``--lport``, ``--bind``) and the control-channel key of the first one
+  among them, since a single socket per address family carries the
+  probes; otherwise probing is skipped and the configured order is used.
+  Remotes that answered are tried first, in the order described above;
+  all other remotes, including TCP ones, follow in their configured
+  order. Probing runs once, before the first connection attempt; a
+  restart does not probe again. See ``--server-probe-reply`` for the
+  server side.
 
 --static-challenge args
   Enable static challenge/response protocol

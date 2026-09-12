@@ -33,6 +33,7 @@
 #include "socket_util.h"
 
 #include "memdbg.h"
+#include "siphash.h"
 
 void
 mroute_addr_init(struct mroute_addr *addr)
@@ -354,11 +355,11 @@ mroute_addr_mask_host_bits(struct mroute_addr *ma)
  * address type, number of bits in the network address,
  * and the actual address.
  */
-uint32_t
-mroute_addr_hash_function(const void *key, uint32_t iv)
+uint64_t
+mroute_addr_hash_function(const void *key, const uint8_t hash_key[HASH_KEY_LEN])
 {
-    return hash_func(mroute_addr_hash_ptr((const struct mroute_addr *)key),
-                     mroute_addr_hash_len((const struct mroute_addr *)key), iv);
+    return siphash_hash_func(mroute_addr_hash_ptr((const struct mroute_addr *)key),
+                             mroute_addr_hash_len((const struct mroute_addr *)key), hash_key);
 }
 
 bool

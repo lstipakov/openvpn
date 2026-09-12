@@ -48,11 +48,14 @@
 #include "ssl_ncp.h"
 #include "tls_crypt.h"
 #include "forward.h"
+#include "oob_client.h"
 #include "auth_token.h"
 #include "mss.h"
 #include "mudp.h"
 #include "dco.h"
 #include "tun_afunix.h"
+#include "schedule.h"
+#include "options_string.h"
 
 #include "memdbg.h"
 
@@ -87,6 +90,8 @@ void
 context_clear_2(struct context *c)
 {
     CLEAR(c->c2);
+    /* 0 is a valid descriptor, so "no socket" has to be set explicitly */
+    c->c2.oob_probe_sd = SOCKET_UNDEFINED;
 }
 
 void
@@ -319,16 +324,11 @@ static unsigned int
 management_callback_remote_entry_count(void *arg)
 {
     ASSERT(arg);
-    struct context *c = (struct context *)arg;
-    struct connection_list *l = c->options.connection_list;
+    const struct context *c = (struct context *)arg;
+    const struct connection_list *l = c->options.connection_list;
 
     return l->len;
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#endif
 
 static bool
 management_callback_remote_entry_get(void *arg, unsigned int index, char **remote)
@@ -340,9 +340,9 @@ management_callback_remote_entry_get(void *arg, unsigned int index, char **remot
     struct connection_list *l = c->options.connection_list;
     bool ret = true;
 
-    if (index < l->len)
+    if (l->len > 0 && index < (unsigned int)l->len)
     {
-        struct connection_entry *ce = l->array[index];
+        const struct connection_entry *ce = l->array[index];
         const char *proto = proto2ascii(ce->proto, ce->af, false);
         const char *status = (ce->flags & CE_DISABLED) ? "disabled" : "enabled";
 
@@ -363,10 +363,6 @@ management_callback_remote_entry_get(void *arg, unsigned int index, char **remot
 
     return ret;
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 static bool
 management_callback_remote_cmd(void *arg, const char **p)
@@ -463,13 +459,7 @@ ce_management_query_remote(struct context *c)
 }
 #endif /* ENABLE_MANAGEMENT */
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#pragma GCC diagnostic ignored "-Wsign-compare"
-#endif
-
-/*
+/**
  * Initialize and possibly randomize the connection list.
  *
  * Applies the Fisher-Yates shuffle algorithm to ensure all permutations
@@ -488,10 +478,9 @@ init_connection_list(struct context *c)
     l->current = -1;
     if (c->options.remote_random)
     {
-        int i;
-        for (i = l->len - 1; i > 0; --i)
+        for (int i = l->len - 1; i > 0; --i)
         {
-            const int j = get_random() % (i + 1);
+            const int64_t j = get_random() % (i + 1);
             if (i != j)
             {
                 struct connection_entry *tmp;
@@ -525,7 +514,7 @@ next_connection_entry(struct context *c)
 {
     struct connection_list *l = c->options.connection_list;
     bool ce_defined;
-    struct connection_entry *ce;
+    const struct connection_entry *ce;
     int n_cycles = 0;
 
     do
@@ -638,8 +627,8 @@ next_connection_entry(struct context *c)
     } while (!ce_defined);
 
     /* Check if this connection attempt would bring us over the limit */
-    if (c->options.connect_retry_max > 0
-        && c->options.unsuccessful_attempts > (l->len * c->options.connect_retry_max))
+    int max_attempts = l->len * c->options.connect_retry_max;
+    if (max_attempts > 0 && c->options.unsuccessful_attempts > (unsigned int)max_attempts)
     {
         msg(M_FATAL, "All connections have been connect-retry-max (%d) times unsuccessful, exiting",
             c->options.connect_retry_max);
@@ -837,11 +826,6 @@ init_port_share(struct context *c)
 bool
 init_static(void)
 {
-#if defined(DMALLOC)
-    crypto_init_dmalloc();
-#endif
-
-
     /*
      * Initialize random number seed.  random() is only used
      * when "weak" random numbers are acceptable.
@@ -851,7 +835,7 @@ init_static(void)
     struct timeval tv;
     if (!gettimeofday(&tv, NULL))
     {
-        const unsigned int seed = (unsigned int)tv.tv_sec ^ tv.tv_usec;
+        const unsigned int seed = (unsigned int)(tv.tv_sec ^ tv.tv_usec);
         srandom(seed);
     }
 
@@ -875,11 +859,6 @@ init_static(void)
     update_time();
 
     init_ssl_lib();
-
-#ifdef SCHEDULE_TEST
-    schedule_test();
-    return false;
-#endif
 
 #ifdef IFCONFIG_POOL_TEST
     ifconfig_pool_test(0x0A010004, 0x0A0100FF);
@@ -1581,10 +1560,10 @@ initialization_sequence_completed(struct context *c, const unsigned int flags)
     /* Tell management interface that we initialized */
     if (management)
     {
-        in_addr_t *tun_local = NULL;
-        struct in6_addr *tun_local6 = NULL;
+        const in_addr_t *tun_local = NULL;
+        const struct in6_addr *tun_local6 = NULL;
         struct openvpn_sockaddr local, remote;
-        struct link_socket_actual *actual;
+        const struct link_socket_actual *actual;
         socklen_t sa_len = sizeof(local);
         const char *detail = "SUCCESS";
         if (flags & ISC_ERRORS)
@@ -2176,7 +2155,7 @@ options_hash_changed_or_zero(const struct sha256_digest *a, const struct sha256_
 static void
 add_delim_if_non_empty(struct buffer *buf, const char *header)
 {
-    if (buf_len(buf) > strlen(header))
+    if (BLENZ(buf) > strlen(header))
     {
         buf_printf(buf, ", ");
     }
@@ -2207,9 +2186,10 @@ tls_print_deferred_options_results(struct context *c)
                    md_kt_name(o->authname));
     }
 
-    if (o->use_peer_id)
+    if (c->c2.tls_multi && c->c2.tls_multi->use_peer_id)
     {
-        buf_printf(&out, ", peer-id: %d", o->peer_id);
+        buf_printf(&out, ", rx-peer-id: %u, tx-peer-id: %u", c->c2.tls_multi->rx_peer_id,
+                   c->c2.tls_multi->tx_peer_id);
     }
 
 #ifdef USE_COMP
@@ -2264,7 +2244,7 @@ tls_print_deferred_options_results(struct context *c)
         buf_printf(&out, "session-timeout %d", o->session_timeout);
     }
 
-    if (buf_len(&out) > strlen(header))
+    if (BLENZ(&out) > strlen(header))
     {
         msg(D_HANDSHAKE, "%s", BSTR(&out));
     }
@@ -2301,7 +2281,7 @@ tls_print_deferred_options_results(struct context *c)
         }
     }
 
-    if (buf_len(&out) > strlen(header))
+    if (BLENZ(&out) > strlen(header))
     {
         msg(D_HANDSHAKE, "%s", BSTR(&out));
     }
@@ -2325,6 +2305,11 @@ do_deferred_options_part2(struct context *c)
         frame_fragment = &c->c2.frame_fragment;
     }
 #endif
+
+    /* The peer-id can also be negotiated without being pushed, so sync the
+     * option before the frame is recalculated: it decides whether the
+     * DATA_V2 header is accounted for */
+    c->options.use_peer_id = c->c2.tls_multi->use_peer_id;
 
     struct tls_session *session = &c->c2.tls_multi->session[TM_ACTIVE];
     if (!tls_session_update_crypto_params(c->c2.tls_multi, session, &c->options, &c->c2.frame,
@@ -2526,13 +2511,13 @@ do_update(struct context *c, uint64_t option_types_found)
 /*
  * These are the option categories which will be accepted by pull.
  */
-unsigned int
+uint64_t
 pull_permission_mask(const struct context *c)
 {
-    unsigned int flags = OPT_P_UP | OPT_P_ROUTE_EXTRAS | OPT_P_SOCKBUF | OPT_P_SOCKFLAGS
-                         | OPT_P_SETENV | OPT_P_SHAPER | OPT_P_TIMER | OPT_P_COMP | OPT_P_PERSIST
-                         | OPT_P_MESSAGES | OPT_P_EXPLICIT_NOTIFY | OPT_P_ECHO | OPT_P_PULL_MODE
-                         | OPT_P_PEER_ID | OPT_P_NCP | OPT_P_PUSH_MTU;
+    uint64_t flags = OPT_P_UP | OPT_P_ROUTE_EXTRAS | OPT_P_SOCKBUF | OPT_P_SOCKFLAGS
+                     | OPT_P_SETENV | OPT_P_SHAPER | OPT_P_TIMER | OPT_P_COMP | OPT_P_PERSIST
+                     | OPT_P_MESSAGES | OPT_P_EXPLICIT_NOTIFY | OPT_P_ECHO | OPT_P_PULL_MODE
+                     | OPT_P_PEER_ID | OPT_P_NCP | OPT_P_PUSH_MTU;
 
     if (!c->options.route_nopull)
     {
@@ -2650,15 +2635,6 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
         }
     }
 
-    if (found & OPT_P_SOCKFLAGS)
-    {
-        msg(D_PUSH, "OPTIONS IMPORT: --socket-flags option modified");
-        for (int i = 0; i < c->c1.link_sockets_num; i++)
-        {
-            link_socket_update_flags(c->c2.link_sockets[i], c->options.sockflags);
-        }
-    }
-
     if (found & OPT_P_PERSIST)
     {
         msg(D_PUSH, "OPTIONS IMPORT: --persist options modified");
@@ -2688,7 +2664,8 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
     {
         msg(D_PUSH_DEBUG, "OPTIONS IMPORT: peer-id set");
         c->c2.tls_multi->use_peer_id = true;
-        c->c2.tls_multi->peer_id = c->options.peer_id;
+        c->c2.tls_multi->tx_peer_id = c->options.peer_id;
+        c->c2.tls_multi->rx_peer_id = c->options.peer_id;
     }
 
     /* process (potentially) pushed options */
@@ -2715,7 +2692,7 @@ do_deferred_options(struct context *c, const uint64_t found, const bool is_updat
     /* Ensure that for epoch data format is only enabled if also data v2
      * is enabled */
     bool epoch_data = c->options.imported_protocol_flags & CO_EPOCH_DATA_KEY_FORMAT;
-    bool datav2_enabled = c->options.use_peer_id && c->options.peer_id < MAX_PEER_ID;
+    bool datav2_enabled = c->c2.tls_multi->use_peer_id && c->c2.tls_multi->tx_peer_id < MAX_PEER_ID;
 
     if (epoch_data && !datav2_enabled)
     {
@@ -2859,7 +2836,7 @@ do_startup_pause(struct context *c)
     }
 }
 
-static size_t
+static int
 get_frame_mtu(struct context *c, const struct options *o)
 {
     size_t mtu;
@@ -2883,7 +2860,12 @@ get_frame_mtu(struct context *c, const struct options *o)
         msg(M_WARN, "TUN MTU value (%zu) must be at least %d", mtu, TUN_MTU_MIN);
         frame_print(&c->c2.frame, M_FATAL, "MTU is too small");
     }
-    return mtu;
+    if (mtu > TUN_MTU_MAX)
+    {
+        msg(M_WARN, "TUN MTU value (%zu) clamped to %d", mtu, TUN_MTU_MAX);
+        mtu = TUN_MTU_MAX;
+    }
+    return (int)mtu;
 }
 
 /*
@@ -2909,11 +2891,11 @@ frame_finalize_options(struct context *c, const struct options *o)
      * space to allow server to push "baby giant" MTU sizes */
     frame->tun_max_mtu = max_int(TUN_MTU_MAX_MIN, frame->tun_max_mtu);
 
-    size_t payload_size = frame->tun_max_mtu;
+    unsigned int payload_size = frame->tun_max_mtu;
 
     /* we need to be also large enough to hold larger control channel packets
      * if configured */
-    payload_size = max_int(payload_size, o->ce.tls_mtu);
+    payload_size = max_uint(payload_size, o->ce.tls_mtu);
 
     /* The extra tun needs to be added to the payload size */
     if (o->ce.tun_mtu_defined)
@@ -2928,7 +2910,7 @@ frame_finalize_options(struct context *c, const struct options *o)
 
     /* the space that is reserved before the payload to add extra headers to it
      * we always reserve the space for the worst case */
-    size_t headroom = 0;
+    unsigned int headroom = 0;
 
     /* includes IV and packet ID */
     headroom += crypto_max_overhead();
@@ -2952,11 +2934,11 @@ frame_finalize_options(struct context *c, const struct options *o)
     /* the space after the payload, this needs some extra buffer space for
      * encryption so headroom is probably too much but we do not really care
      * the few extra bytes */
-    size_t tailroom = headroom;
+    unsigned int tailroom = headroom;
 
 #ifdef USE_COMP
     msg(D_MTU_DEBUG,
-        "MTU: adding %zu buffer tailroom for compression for %zu "
+        "MTU: adding %u buffer tailroom for compression for %u "
         "bytes of payload",
         COMP_EXTRA_BUFFER(payload_size), payload_size);
     tailroom += COMP_EXTRA_BUFFER(payload_size);
@@ -3076,13 +3058,13 @@ do_init_crypto_static(struct context *c, const unsigned int flags)
 /*
  * Initialize the tls-auth/crypt key context
  */
-static void
-do_init_tls_wrap_key(struct context *c)
+void
+do_init_tls_wrap_key(struct context *c, const struct connection_entry *ce)
 {
     const struct options *options = &c->options;
 
     /* TLS handshake authentication (--tls-auth) */
-    if (options->ce.tls_auth_file)
+    if (ce->tls_auth_file)
     {
         /* Initialize key_type for tls-auth with auth only */
         CLEAR(c->c1.ks.tls_auth_key_type);
@@ -3097,33 +3079,31 @@ do_init_tls_wrap_key(struct context *c)
         }
 
         crypto_read_openvpn_key(&c->c1.ks.tls_auth_key_type, &c->c1.ks.tls_wrap_key,
-                                options->ce.tls_auth_file, options->ce.tls_auth_file_inline,
-                                options->ce.key_direction, "Control Channel Authentication",
-                                "tls-auth", &c->c1.ks.original_wrap_keydata);
+                                ce->tls_auth_file, ce->tls_auth_file_inline, ce->key_direction,
+                                "Control Channel Authentication", "tls-auth",
+                                &c->c1.ks.original_wrap_keydata);
     }
 
     /* TLS handshake encryption+authentication (--tls-crypt) */
-    if (options->ce.tls_crypt_file)
+    if (ce->tls_crypt_file)
     {
         tls_crypt_init_key(&c->c1.ks.tls_wrap_key, &c->c1.ks.original_wrap_keydata,
-                           options->ce.tls_crypt_file, options->ce.tls_crypt_file_inline,
-                           options->tls_server);
+                           ce->tls_crypt_file, ce->tls_crypt_file_inline, options->tls_server);
     }
 
     /* tls-crypt with client-specific keys (--tls-crypt-v2) */
-    if (options->ce.tls_crypt_v2_file)
+    if (ce->tls_crypt_v2_file)
     {
         if (options->tls_server)
         {
             tls_crypt_v2_init_server_key(&c->c1.ks.tls_crypt_v2_server_key, true,
-                                         options->ce.tls_crypt_v2_file,
-                                         options->ce.tls_crypt_v2_file_inline);
+                                         ce->tls_crypt_v2_file, ce->tls_crypt_v2_file_inline);
         }
         else
         {
             tls_crypt_v2_init_client_key(&c->c1.ks.tls_wrap_key, &c->c1.ks.original_wrap_keydata,
-                                         &c->c1.ks.tls_crypt_v2_wkc, options->ce.tls_crypt_v2_file,
-                                         options->ce.tls_crypt_v2_file_inline);
+                                         &c->c1.ks.tls_crypt_v2_wkc, ce->tls_crypt_v2_file,
+                                         ce->tls_crypt_v2_file_inline);
         }
         /* We have to ensure that the loaded tls-crypt key is small enough
          * to fit into the initial hard reset v3 packet */
@@ -3132,15 +3112,46 @@ do_init_tls_wrap_key(struct context *c)
         /* empty ACK/message id, tls-crypt, Opcode, UDP, ipv6 */
         int required_size = 5 + wkc_len + tls_crypt_buf_overhead() + 1 + 8 + 40;
 
-        if (required_size > c->options.ce.tls_mtu)
+        if (required_size > ce->tls_mtu)
         {
             msg(M_WARN,
                 "ERROR: tls-crypt-v2 client key too large to work with "
                 "requested --max-packet-size %d, requires at least "
                 "--max-packet-size %d. Packets will ignore requested "
                 "maximum packet size",
-                c->options.ce.tls_mtu, required_size);
+                ce->tls_mtu, required_size);
         }
+    }
+}
+
+/*
+ * Configure a control-channel wrapping context (tls-auth/tls-crypt) from a
+ * connection entry and the already-loaded tls-wrap key material. Leaves the
+ * context in TLS_WRAP_NONE if neither tls-auth nor tls-crypt is configured.
+ * tls-crypt-v2 specifics (WKc, server key) are handled by the caller.
+ */
+void
+init_tls_wrap_ctx(struct tls_wrap_ctx *tls_wrap, const struct connection_entry *ce, bool tls_client,
+                  const struct key_schedule *ks, struct packet_id_persist *pid_persist)
+{
+    /* TLS handshake authentication (--tls-auth) */
+    if (ce->tls_auth_file)
+    {
+        tls_wrap->mode = TLS_WRAP_AUTH;
+    }
+
+    /* TLS handshake encryption (--tls-crypt) */
+    if (ce->tls_crypt_file || (ce->tls_crypt_v2_file && tls_client))
+    {
+        tls_wrap->mode = TLS_WRAP_CRYPT;
+    }
+
+    if (tls_wrap->mode == TLS_WRAP_AUTH || tls_wrap->mode == TLS_WRAP_CRYPT)
+    {
+        tls_wrap->opt.key_ctx_bi = ks->tls_wrap_key;
+        tls_wrap->opt.pid_persist = pid_persist;
+        tls_wrap->opt.flags |= CO_PACKET_ID_LONG_FORM;
+        tls_wrap->original_wrap_keydata = ks->original_wrap_keydata;
     }
 }
 
@@ -3215,7 +3226,7 @@ do_init_crypto_tls_c1(struct context *c)
         init_key_type(&c->c1.ks.key_type, ciphername, options->authname, true, warn);
 
         /* initialize tls-auth/crypt/crypt-v2 key */
-        do_init_tls_wrap_key(c);
+        do_init_tls_wrap_key(c, &c->options.ce);
 
         /* initialise auth-token crypto support */
         if (c->options.auth_token_generate)
@@ -3240,7 +3251,7 @@ do_init_crypto_tls_c1(struct context *c)
          * tls-auth/crypt key can be configured per connection block, therefore
          * we must reload it as it may have changed
          */
-        do_init_tls_wrap_key(c);
+        do_init_tls_wrap_key(c, &c->options.ce);
     }
 }
 
@@ -3298,18 +3309,15 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     if (options->renegotiate_seconds_min < 0)
     {
         /* Add 10% jitter to reneg-sec by default (server side only) */
-        int auto_jitter = options->mode != MODE_SERVER
-                              ? 0
-                              : get_random() % max_int(options->renegotiate_seconds / 10, 1);
+        int jitter_max = max_int(options->renegotiate_seconds / 10, 1);
+        int auto_jitter = options->mode != MODE_SERVER ? 0 : (int)(get_random() % jitter_max);
         to.renegotiate_seconds = options->renegotiate_seconds - auto_jitter;
     }
     else
     {
         /* Add user-specified jitter to reneg-sec */
-        to.renegotiate_seconds =
-            options->renegotiate_seconds
-            - (get_random()
-               % max_int(options->renegotiate_seconds - options->renegotiate_seconds_min, 1));
+        int jitter_max = max_int(options->renegotiate_seconds - options->renegotiate_seconds_min, 1);
+        to.renegotiate_seconds = options->renegotiate_seconds - (int)(get_random() % jitter_max);
     }
     to.single_session = options->single_session;
     to.mode = options->mode;
@@ -3343,7 +3351,7 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
 
     /* should we not xmit any packets until we get an initial
      * response from client? */
-    if (to.server && c->mode == CM_CHILD_TCP)
+    if (to.server && (c->mode == CM_CHILD_TCP || (c->mode == CM_P2P && options->ce.proto == PROTO_TCP_SERVER)))
     {
         to.xmit_hold = true;
     }
@@ -3419,25 +3427,9 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
         to.ekm_size = 0;
     }
 
-    /* TLS handshake authentication (--tls-auth) */
-    if (options->ce.tls_auth_file)
-    {
-        to.tls_wrap.mode = TLS_WRAP_AUTH;
-    }
-
-    /* TLS handshake encryption (--tls-crypt) */
-    if (options->ce.tls_crypt_file || (options->ce.tls_crypt_v2_file && options->tls_client))
-    {
-        to.tls_wrap.mode = TLS_WRAP_CRYPT;
-    }
-
-    if (to.tls_wrap.mode == TLS_WRAP_AUTH || to.tls_wrap.mode == TLS_WRAP_CRYPT)
-    {
-        to.tls_wrap.opt.key_ctx_bi = c->c1.ks.tls_wrap_key;
-        to.tls_wrap.opt.pid_persist = &c->c1.pid_persist;
-        to.tls_wrap.opt.flags |= CO_PACKET_ID_LONG_FORM;
-        to.tls_wrap.original_wrap_keydata = c->c1.ks.original_wrap_keydata;
-    }
+    /* Control-channel wrapping (--tls-auth / --tls-crypt) */
+    init_tls_wrap_ctx(&to.tls_wrap, &c->options.ce, options->tls_client, &c->c1.ks,
+                      &c->c1.pid_persist);
 
     if (options->ce.tls_crypt_v2_file)
     {
@@ -3475,7 +3467,7 @@ do_init_crypto_tls(struct context *c, const unsigned int flags)
     if (flags & CF_INIT_TLS_AUTH_STANDALONE)
     {
         c->c2.tls_auth_standalone = tls_auth_standalone_init(&to, &c->c2.gc);
-        c->c2.session_id_hmac = session_id_hmac_init();
+        siphash_key_init(c->c2.session_id_key);
     }
 }
 
@@ -3491,6 +3483,21 @@ do_init_frame_tls(struct context *c)
         /* Keep the max mtu also in the frame of tls multi so it can access
          * it in push_peer_info */
         c->c2.tls_multi->opt.frame.tun_max_mtu = c->c2.frame.tun_max_mtu;
+
+        /* OOB server probe: the probe reply already served as the server's
+         * HARD_RESET (it carried a valid SYN-cookie), so the handshake starts
+         * from that reply and we send no reset of our own. Count
+         * the reply as the initial packet received (as the server does before its
+         * own session_skip_to_pre_start), so tls_initial_packet_received() is true
+         * and check_server_poll_timeout() does not restart a connected session. */
+        if (c->c2.oob_probe_adopt)
+        {
+            c->c2.tls_multi->n_sessions++;
+            session_skip_to_pre_start_client(&c->c2.tls_multi->session[TM_ACTIVE],
+                                             &c->c2.oob_probe_client_sid,
+                                             &c->c2.oob_probe_server_sid, &c->c2.oob_probe_remote,
+                                             c->c2.oob_probe_resend_wkc);
+        }
     }
     if (c->c2.tls_auth_standalone)
     {
@@ -3501,10 +3508,6 @@ do_init_frame_tls(struct context *c)
         c->c2.tls_auth_standalone->workbuf = alloc_buf_gc(BUF_SIZE(&c->c2.frame), &c->c2.gc);
     }
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 /*
  * No encryption or authentication.
@@ -3806,6 +3809,12 @@ do_init_socket_phase1(struct context *c)
                 mode = LS_MODE_TCP_ACCEPT_FROM;
             }
         }
+        /* adopt the OOB server-probe socket as this client's connection socket
+         * (probe-started handshake); only the single client socket is ever adopted */
+        else if (c->c2.oob_probe_adopt && i == 0)
+        {
+            mode = LS_MODE_UDP_ADOPT;
+        }
 
         /* init each socket with its specific args */
         link_socket_init_phase1(c, i, mode);
@@ -3971,6 +3980,16 @@ do_close_free_key_schedule(struct context *c, bool free_ssl_ctx)
 static void
 do_close_link_socket(struct context *c)
 {
+    /* An OOB probe socket handed off for a probe-started handshake is adopted by the
+     * link socket in link_socket_init_phase1() (which clears oob_probe_sd). If the
+     * connection attempt aborted before that, the fd is still owned here; close it
+     * so it is not leaked when context_clear_2() zeroes c2. */
+    if (c->c2.oob_probe_sd != SOCKET_UNDEFINED)
+    {
+        openvpn_close_socket(c->c2.oob_probe_sd);
+        c->c2.oob_probe_sd = SOCKET_UNDEFINED;
+    }
+
     if (c->c2.link_sockets && c->c2.link_socket_owned)
     {
         for (int i = 0; i < c->c1.link_sockets_num; i++)
@@ -4302,7 +4321,7 @@ management_callback_network_change(void *arg, bool samenetwork)
     /* On some newer Android handsets, changing to a different network
      * often does not trigger a TCP reset but continue using the old
      * connection (e.g. using mobile connection when WiFi becomes available */
-    struct link_socket_info *lsi = get_link_socket_info(c);
+    const struct link_socket_info *lsi = get_link_socket_info(c);
     if (lsi && proto_is_tcp(lsi->proto) && !samenetwork)
     {
         return -2;
@@ -4473,6 +4492,10 @@ init_instance(struct context *c, const struct env_set *env, const unsigned int f
             goto sig;
         }
     }
+
+    /* Probe configured remotes and reorder them best-first (--server-probe);
+     * no-op otherwise. Must run before next_connection_entry() picks a remote. */
+    client_probe_and_order_remotes(c);
 
     /* Resets all values to the initial values from the config where needed */
     pre_connect_restore(&c->options, &c->c2.gc);
@@ -4821,6 +4844,8 @@ void
 inherit_context_child(struct context *dest, const struct context *src, struct link_socket *sock)
 {
     CLEAR(*dest);
+    /* 0 is a valid descriptor, so "no socket" has to be set explicitly */
+    dest->c2.oob_probe_sd = SOCKET_UNDEFINED;
 
     /* proto_is_dgram will ASSERT(0) if proto is invalid */
     dest->mode = proto_is_dgram(sock->info.proto) ? CM_CHILD_UDP : CM_CHILD_TCP;

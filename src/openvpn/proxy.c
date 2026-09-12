@@ -703,7 +703,7 @@ establish_http_proxy_passthru(struct http_proxy_info *p,
 #if PROXY_DIGEST_AUTH
         else if (p->auth_method == HTTP_AUTH_DIGEST && !processed)
         {
-            char *pa = p->proxy_authenticate;
+            const char *pa = p->proxy_authenticate;
             const int method = p->auth_method;
             ASSERT(pa);
 
@@ -734,7 +734,7 @@ establish_http_proxy_passthru(struct http_proxy_info *p,
                 }
 
                 /* generate a client nonce */
-                ASSERT(rand_bytes(cnonce_raw, sizeof(cnonce_raw)));
+                prng_bytes(cnonce_raw, sizeof(cnonce_raw));
                 cnonce = make_base64_string2(cnonce_raw, sizeof(cnonce_raw), &gc);
 
 

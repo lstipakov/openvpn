@@ -31,12 +31,15 @@
 #include <stdarg.h>
 #include <string.h>
 #include <setjmp.h>
+#include <inttypes.h>
 #include <cmocka.h>
 
 #include "crypto.h"
 #include "crypto_epoch.h"
 #include "options.h"
 #include "ssl_backend.h"
+#include "siphash.h"
+#include "siphash_openssl.h"
 
 #include "mss.h"
 #include "test_common.h"
@@ -479,9 +482,9 @@ void
 crypto_test_hkdf_expand_testa1(void **state)
 {
     /* RFC 5889 A.1 Test Case 1 */
-    uint8_t prk[32] = { 0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf, 0x0d, 0xdc, 0x3f,
-                        0x0d, 0xc4, 0x7b, 0xba, 0x63, 0x90, 0xb6, 0xc7, 0x3b, 0xb5, 0x0f,
-                        0x9c, 0x31, 0x22, 0xec, 0x84, 0x4a, 0xd7, 0xc2, 0xb3, 0xe5 };
+    const uint8_t prk[32] = { 0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf, 0x0d, 0xdc, 0x3f,
+                              0x0d, 0xc4, 0x7b, 0xba, 0x63, 0x90, 0xb6, 0xc7, 0x3b, 0xb5, 0x0f,
+                              0x9c, 0x31, 0x22, 0xec, 0x84, 0x4a, 0xd7, 0xc2, 0xb3, 0xe5 };
 
     uint8_t info[10] = { 0xf0, 0xf1, 0xf2, 0xf3, 0xf4, 0xf5, 0xf6, 0xf7, 0xf8, 0xf9 };
 
@@ -500,9 +503,9 @@ void
 crypto_test_hkdf_expand_testa2(void **state)
 {
     /* RFC 5889 A.2 Test Case 2 */
-    uint8_t prk[32] = { 0x06, 0xa6, 0xb8, 0x8c, 0x58, 0x53, 0x36, 0x1a, 0x06, 0x10, 0x4c,
-                        0x9c, 0xeb, 0x35, 0xb4, 0x5c, 0xef, 0x76, 0x00, 0x14, 0x90, 0x46,
-                        0x71, 0x01, 0x4a, 0x19, 0x3f, 0x40, 0xc1, 0x5f, 0xc2, 0x44 };
+    const uint8_t prk[32] = { 0x06, 0xa6, 0xb8, 0x8c, 0x58, 0x53, 0x36, 0x1a, 0x06, 0x10, 0x4c,
+                              0x9c, 0xeb, 0x35, 0xb4, 0x5c, 0xef, 0x76, 0x00, 0x14, 0x90, 0x46,
+                              0x71, 0x01, 0x4a, 0x19, 0x3f, 0x40, 0xc1, 0x5f, 0xc2, 0x44 };
 
     uint8_t info[80] = { 0xb0, 0xb1, 0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xbb,
                          0xbc, 0xbd, 0xbe, 0xbf, 0xc0, 0xc1, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
@@ -531,11 +534,11 @@ void
 crypto_test_hkdf_expand_testa3(void **state)
 {
     /* RFC 5889 A.3 Test Case 3 */
-    uint8_t prk[32] = { 0x19, 0xef, 0x24, 0xa3, 0x2c, 0x71, 0x7b, 0x16, 0x7f, 0x33, 0xa9,
-                        0x1d, 0x6f, 0x64, 0x8b, 0xdf, 0x96, 0x59, 0x67, 0x76, 0xaf, 0xdb,
-                        0x63, 0x77, 0xac, 0x43, 0x4c, 0x1c, 0x29, 0x3c, 0xcb, 0x04 };
+    const uint8_t prk[32] = { 0x19, 0xef, 0x24, 0xa3, 0x2c, 0x71, 0x7b, 0x16, 0x7f, 0x33, 0xa9,
+                              0x1d, 0x6f, 0x64, 0x8b, 0xdf, 0x96, 0x59, 0x67, 0x76, 0xaf, 0xdb,
+                              0x63, 0x77, 0xac, 0x43, 0x4c, 0x1c, 0x29, 0x3c, 0xcb, 0x04 };
 
-    uint8_t info[] = { 0 };
+    const uint8_t info[] = { 0 };
 
     int L = 42;
     uint8_t okm[42] = { 0x8d, 0xa4, 0xe7, 0x75, 0xa5, 0x63, 0xc1, 0x8f, 0x71, 0x5f, 0x80,
@@ -555,9 +558,9 @@ crypto_test_hkdf_expand_test_ovpn(void **state)
     /* tests the HDKF with a label/okm that OpenVPN itself uses in OpenSSL 3
      * HDKF unit test*/
 
-    uint8_t prk[32] = { 0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf, 0x0d, 0xdc, 0x3f,
-                        0x0d, 0xc4, 0x7b, 0xba, 0x63, 0x90, 0xb6, 0xc7, 0x3b, 0xb5, 0x0f,
-                        0x9c, 0x31, 0x22, 0xec, 0x84, 0x4a, 0xd7, 0xc2, 0xb3, 0xe5 };
+    const uint8_t prk[32] = { 0x07, 0x77, 0x09, 0x36, 0x2c, 0x2e, 0x32, 0xdf, 0x0d, 0xdc, 0x3f,
+                              0x0d, 0xc4, 0x7b, 0xba, 0x63, 0x90, 0xb6, 0xc7, 0x3b, 0xb5, 0x0f,
+                              0x9c, 0x31, 0x22, 0xec, 0x84, 0x4a, 0xd7, 0xc2, 0xb3, 0xe5 };
 
     uint8_t info[18] = { 0x00, 0x1b, 0x0e, 0x6f, 0x76, 0x70, 0x6e, 0x20, 0x75,
                          0x6e, 0x69, 0x74, 0x20, 0x74, 0x65, 0x73, 0x74, 0x00 };
@@ -677,7 +680,7 @@ struct epoch_test_state
 static int
 crypto_test_epoch_setup(void **state)
 {
-    uint16_t *num_future_keys = (uint16_t *)*state;
+    const uint16_t *num_future_keys = (uint16_t *)*state;
     struct epoch_test_state *data = calloc(1, sizeof(struct epoch_test_state));
 
     data->gc = gc_new();
@@ -923,6 +926,69 @@ epoch_test_derive_data_key(void **state)
     assert_memory_equal(key_parameters.hmac, exp_impl_iv, sizeof(exp_impl_iv));
 }
 
+/* Use a define here since some c compilers don't like array initialisation
+ * with an integer */
+#define UT_SIPHASH_HASH_SIZE 16
+
+static const char *ut_message = "Look behind you, a Three-Headed Monkey!";
+static const uint8_t ut_key[SIPHASH_KEY_SIZE] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };
+const uint8_t expected_hash[UT_SIPHASH_HASH_SIZE] = { 0x3e, 0xea, 0x95, 0xb2, 0x6d, 0x5c, 0x4e, 0xfa,
+                                                      0x20, 0x47, 0x65, 0x7e, 0xdd, 0xcd, 0x62, 0x51 };
+
+static void
+test_siphash(void **state)
+{
+    uint8_t out[UT_SIPHASH_HASH_SIZE] = { 0 };
+    siphash_reference(ut_message, strlen(ut_message), ut_key, out, UT_SIPHASH_HASH_SIZE);
+    assert_memory_equal(out, expected_hash, UT_SIPHASH_HASH_SIZE);
+}
+
+static void
+test_siphash_openssl(void **state)
+{
+    void *sipctx = siphash_openssl_init(UT_SIPHASH_HASH_SIZE);
+
+    if (!siphash_openssl_available(sipctx))
+    {
+        siphash_openssl_uninit(sipctx);
+        skip();
+    }
+
+    uint8_t out[UT_SIPHASH_HASH_SIZE] = { 0 };
+
+    siphash_openssl(sipctx, ut_message, strlen(ut_message), ut_key, out,
+                    UT_SIPHASH_HASH_SIZE);
+    assert_memory_equal(out, expected_hash, UT_SIPHASH_HASH_SIZE);
+
+    /* check that calling the function twice is safe */
+    siphash_openssl(sipctx, ut_message, strlen(ut_message), ut_key, out,
+                    UT_SIPHASH_HASH_SIZE);
+    assert_memory_equal(out, expected_hash, UT_SIPHASH_HASH_SIZE);
+
+    /* Test a few random strings and ensure that our implementation behave the
+     * same */
+    for (int i = 0; i < 1000; i++)
+    {
+        size_t len = random() % 1000u;
+        uint8_t buf[1024] = { 0 };
+        uint8_t key[SIPHASH_KEY_SIZE] = { 0 };
+
+        assert_true(rand_bytes(buf, (int)len));
+        assert_true(rand_bytes(key, sizeof(key)));
+
+
+        siphash_openssl(sipctx, buf, len, key, out, UT_SIPHASH_HASH_SIZE);
+
+        uint8_t outref[UT_SIPHASH_HASH_SIZE] = { 0 };
+        siphash_reference(buf, len, key, outref, UT_SIPHASH_HASH_SIZE);
+
+        assert_memory_equal(out, outref, UT_SIPHASH_HASH_SIZE);
+    }
+
+    siphash_openssl_uninit(sipctx);
+}
+
+
 int
 main(void)
 {
@@ -960,7 +1026,9 @@ main(void)
         cmocka_unit_test_prestate_setup_teardown(crypto_test_epoch_edge,
                                                  crypto_test_epoch_setup,
                                                  crypto_test_epoch_teardown, &prestate_num13),
-        cmocka_unit_test(epoch_test_derive_data_key)
+        cmocka_unit_test(epoch_test_derive_data_key),
+        cmocka_unit_test(test_siphash),
+        cmocka_unit_test(test_siphash_openssl)
     };
 
     return cmocka_run_group_tests_name("crypto tests", tests, NULL, NULL);

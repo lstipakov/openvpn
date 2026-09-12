@@ -1329,8 +1329,6 @@ man_certificate(struct management *man)
 static void
 man_load_stats(struct management *man)
 {
-    extern counter_type link_read_bytes_global;
-    extern counter_type link_write_bytes_global;
     int nclients = 0;
 
     if (man->persist.callback.n_clients)
@@ -3823,7 +3821,7 @@ management_query_multiline_flatten_newline(struct management *man, const char *b
 {
     int ok;
     char *result = NULL;
-    struct buffer *buf;
+    const struct buffer *buf;
 
     ok = management_query_multiline(man, b64_data, prompt, cmd, state, input);
     if (ok && buffer_list_defined(*input))
@@ -3852,7 +3850,7 @@ management_query_multiline_flatten(struct management *man, const char *b64_data,
 {
     int ok;
     char *result = NULL;
-    struct buffer *buf;
+    const struct buffer *buf;
 
     ok = management_query_multiline(man, b64_data, prompt, cmd, state, input);
     if (ok && buffer_list_defined(*input))

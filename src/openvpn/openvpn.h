@@ -45,6 +45,7 @@
 #include "plugin.h"
 #include "manage.h"
 #include "dns.h"
+#include "siphash.h"
 
 /*
  * Our global key schedules, packaged thusly
@@ -239,7 +240,19 @@ struct context_2
 
     bool link_socket_owned;
 
-    const struct link_socket *accept_from;   /* possibly do accept() on a parent link_socket */
+    const struct link_socket *accept_from; /* possibly do accept() on a parent link_socket */
+
+    /* OOB probe-started handshake: when oob_probe_adopt is true, the
+     * connection adopts oob_probe_sd (the winning remote's probe
+     * socket) instead of creating one, and pins oob_probe_remote (the exact
+     * address probed) as the outgoing address, so the source IP+port and the
+     * destination match what the server's handshake cookie is bound to. */
+    bool oob_probe_adopt;
+    socket_descriptor_t oob_probe_sd;
+    struct openvpn_sockaddr oob_probe_remote;
+    struct session_id oob_probe_client_sid;  /* our probe session id (cookie was minted over it) */
+    struct session_id oob_probe_server_sid;  /* the reply's session id = server cookie to echo back */
+    bool oob_probe_resend_wkc;               /* reply asked to complete with CONTROL_WKC_V1 (v2) */
 
     struct link_socket_actual *to_link_addr; /* IP address of remote */
     struct link_socket_actual from;          /* address of incoming datagram */
@@ -335,10 +348,9 @@ struct context_2
      *   \c --tls-auth commandline option. */
 
 
-    hmac_ctx_t *session_id_hmac;
-    /**< the HMAC we use to generate and verify our syn cookie like
-     * session ids from the server.
-     */
+    uint8_t session_id_key[SIPHASH_KEY_SIZE];
+    /**< the siphash secret we use to generate and verify our syn cookie like
+     * session ids from the server. */
 
     /* used to optimize calls to tls_multi_process */
     struct interval tmp_int;

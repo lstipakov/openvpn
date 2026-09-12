@@ -131,7 +131,7 @@ parse_auth_challenge(const char *auth_challenge, struct gc_arena *gc)
     struct auth_challenge_info *ac;
     const int len = strlen(auth_challenge);
     char *work = (char *)gc_malloc(len + 1, false, gc);
-    char *cp;
+    const char *cp;
 
     struct buffer b;
     buf_set_read(&b, (const uint8_t *)auth_challenge, len);
@@ -765,14 +765,15 @@ output_peer_info_env(struct env_set *es, const char *peer_info)
     {
         chomp(line);
         if (validate_peer_info_line(line)
-            && (strncmp(line, "IV_", 3) == 0 || strncmp(line, "UV_", 3) == 0))
+            && (strncmp(line, "IV_", 3) == 0 || strncmp(line, "UV_", 3) == 0
+                || strncmp(line, "ID", 2) == 0))
         {
             msg(M_INFO, "peer info: %s", line);
             env_set_add(es, line);
         }
         else
         {
-            msg(M_WARN, "validation failed on peer_info line received from client");
+            msg(M_WARN, "validation failed on peer_info line received");
         }
     }
 }

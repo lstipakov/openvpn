@@ -58,11 +58,62 @@
  * like P_CONTROL_HARD_RESET_CLIENT_V3 */
 #define P_CONTROL_WKC_V1 11
 
-/* define the range of legal opcodes
+/* Out-of-band control message that does not belong to an established
+ * control channel session (e.g. a server probe). Inherently unreliable:
+ * there is no protocol-level retransmission.
+ *
+ * On the server this is accepted via the tls_pre_decrypt_lite() allowlist and
+ * handled in the new-connection path (it never creates a session). It is not
+ * legal on an established session; see opcode_valid_in_session() below. */
+#define P_CONTROL_OOB_V1 12
+
+/* Variant of P_CONTROL_OOB_V1 with an appended wrapped client key (WKc), like
+ * P_CONTROL_HARD_RESET_CLIENT_V3 / P_CONTROL_WKC_V1. Used when tls-crypt-v2 is
+ * configured: an out-of-band message belongs to no established session, so the
+ * client must carry the WKc for the server to recover the per-client key and
+ * unwrap the message. See doc/tls-crypt-v2.txt and the openvpn-rfc wire
+ * protocol (CONTROL_OOB_WKC_V1). */
+#define P_CONTROL_OOB_WKC_V1 13
+
+/* define the range of defined opcodes, in- and out-of-band. Note this is not
+ * the set of opcodes legal on an established session; see
+ * opcode_valid_in_session().
  * Since we do no longer support key-method 1 we consider
  * the v1 op codes invalid */
 #define P_FIRST_OPCODE 3
-#define P_LAST_OPCODE  11
+#define P_LAST_OPCODE  13
+
+static inline bool
+opcode_is_oob(int op)
+{
+    return op == P_CONTROL_OOB_V1 || op == P_CONTROL_OOB_WKC_V1;
+}
+
+/**
+ * Return true if op may occur on an established control-channel session.
+ *
+ * Out-of-band opcodes may not. They are answered statelessly on the
+ * new-connection path, and being rejected here is a permanent property rather
+ * than a handler that is still missing:
+ *
+ *  - an OOB message carries its TLV payload directly, with no reliability or
+ *    ACK fields (see tls_wrap_oob_standalone()), whereas the established-session
+ *    path parses an ACK array and a control packet-id before anything else. The
+ *    payload is chosen by the sender and session ids are plaintext on the wire,
+ *    so those bytes can be crafted into a valid ACK array, forging ACKs into a
+ *    live control channel and stalling a handshake or rekey.
+ *  - nothing on that path parses an OOB payload, so there is nothing to gain by
+ *    accepting one.
+ *
+ * This cannot be expressed as an opcode range: the inband CONTROL_DATA_V1 of the
+ * wire protocol is legal on an established session, so the OOB opcodes sit
+ * between legal ones.
+ */
+static inline bool
+opcode_valid_in_session(int op)
+{
+    return op >= P_FIRST_OPCODE && op <= P_LAST_OPCODE && !opcode_is_oob(op);
+}
 
 /*
  * Define number of buffers for send and receive in the reliability layer.
@@ -94,6 +145,11 @@ enum first_packet_verdict
     VERDICT_VALID_ACK_V1,
     /** The packet is a valid control packet with appended wrapped client key */
     VERDICT_VALID_WKC_V1,
+    /** This packet is a valid out-of-band control message (e.g. a server
+     * probe). It does not belong to a session and must not create one. */
+    VERDICT_VALID_OOB_V1,
+    /** as VERDICT_VALID_OOB_V1, with a wrapped client key appended (tls-crypt-v2) */
+    VERDICT_VALID_OOB_WKC_V1,
     /** the packet failed on of the various checks */
     VERDICT_INVALID
 };
@@ -151,28 +207,20 @@ enum first_packet_verdict tls_pre_decrypt_lite(const struct tls_auth_standalone 
                                                const struct link_socket_actual *from,
                                                const struct buffer *buf);
 
-/* Creates an SHA256 HMAC context with a random key that is used for the
- * session id.
- *
- * We do not support loading this from a config file since continuing session
- * between restarts of OpenVPN has never been supported and that includes
- * early session setup.
- */
-hmac_ctx_t *session_id_hmac_init(void);
-
 /**
  * Calculates the HMAC based server session id based on a client session id
  * and socket addr.
  *
  * @param client_sid    session id of the client
  * @param from          link_socket from the client
- * @param hmac          the hmac context to use for the calculation
+ * @param key           the siphash key to use for the calculation
  * @param handwindow    the quantisation of the current time
  * @param offset        offset to 'now' to use
  * @return              the expected server session id
  */
 struct session_id calculate_session_id_hmac(struct session_id client_sid,
-                                            const struct openvpn_sockaddr *from, hmac_ctx_t *hmac,
+                                            const struct openvpn_sockaddr *from,
+                                            const uint8_t *key,
                                             int handwindow, int offset);
 
 /**
@@ -185,13 +233,13 @@ struct session_id calculate_session_id_hmac(struct session_id client_sid,
  *
  * @param state         session information
  * @param from          link_socket from the client
- * @param hmac          the hmac context to use for the calculation
+ * @param key           the siphash key to use for the calculation
  * @param handwindow    the quantisation of the current time
  * @param pkt_is_ack    the packet being checked is a P_ACK_V1
  * @return              the expected server session id
  */
 bool check_session_hmac_and_pkt_id(struct tls_pre_decrypt_state *state, const struct openvpn_sockaddr *from,
-                                   hmac_ctx_t *hmac, int handwindow, bool pkt_is_ack);
+                                   uint8_t *key, int handwindow, bool pkt_is_ack);
 
 /*
  * Write a control channel authentication record.
@@ -207,12 +255,10 @@ void write_control_auth(struct tls_session *session, struct key_state *ks, struc
  * @param ctx               control channel security context
  * @param from              incoming link socket address
  * @param opt               tls options struct for the session
- * @param initial_packet    whether this is the initial packet for the connection
  * @return                  if the packet was successfully processed
  */
 bool read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
-                       const struct link_socket_actual *from, const struct tls_options *opt,
-                       bool initial_packet);
+                       const struct link_socket_actual *from, const struct tls_options *opt);
 
 
 /**
@@ -223,6 +269,25 @@ bool read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
 struct buffer tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
                                    struct session_id *own_sid, struct session_id *remote_sid,
                                    uint8_t header, bool request_resend_wkc);
+
+/**
+ * Wrap an already-built out-of-band payload (e.g. probe-reply TLVs) into a
+ * standalone, session-less P_CONTROL_OOB_V1 packet: it prepends the opcode and
+ * own_sid and applies the same tls-auth/tls-crypt wrapping as a regular
+ * control packet, but carries no reliability/ACK fields.
+ *
+ * @param ctx       tls wrapping context (from the pre-decrypt state)
+ * @param tas       standalone auth context providing the work buffer
+ * @param own_sid   session id to use as our session id in the header
+ * @param payload   the OOB message payload (TLV stream) to wrap
+ * @param opcode    the OOB opcode to use: P_CONTROL_OOB_V1, or
+ *                  P_CONTROL_OOB_WKC_V1 to append the tls-crypt-v2 wrapped
+ *                  client key (the context must then carry it).
+ * @return          the wrapped packet buffer, ready to send
+ */
+struct buffer tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
+                                      struct session_id *own_sid, const struct buffer *payload,
+                                      int opcode);
 
 
 /**
@@ -265,6 +330,9 @@ packet_opcode_name(int op)
 
         case P_CONTROL_WKC_V1:
             return "P_CONTROL_WKC_V1";
+
+        case P_CONTROL_OOB_V1:
+            return "P_CONTROL_OOB_V1";
 
         case P_ACK_V1:
             return "P_ACK_V1";

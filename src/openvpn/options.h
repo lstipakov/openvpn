@@ -56,6 +56,8 @@
 #define OPTION_PARM_SIZE 256
 #define OPTION_LINE_SIZE 256
 
+#define PING_TIMEOUT_MAX 86400 /* one day (in seconds) */
+
 extern const char title_string[];
 
 /* certain options are saved before --pull modifications are applied */
@@ -334,6 +336,19 @@ struct options
     int proto_force;
 
     bool mtu_test;
+
+    bool server_probe; /* client: probe remotes (--server-probe) and connect best-first */
+    /* client: default candidate-band margin in ms (--server-probe [max-latency-diff]):
+     * servers within this RTT of the fastest are treated as equally fast */
+    int server_probe_latency_margin;
+    /* server: values advertised in the OOB PROBE_REPLY (--server-probe-reply).
+     * priority/weight follow DNS-SRV semantics; max_latency_diff is the
+     * candidate band this server asks clients to use (0 = only the fastest
+     * server of the group is a candidate). */
+    int server_probe_reply_priority;
+    int server_probe_reply_weight;
+    int server_probe_reply_max_latency_diff;
+    bool server_probe_reply_defined;
 
     bool mlock;
 
@@ -695,6 +710,9 @@ struct options
     enum tun_driver_type windows_driver;
 #endif
 
+    /** Whether the data channel uses the DATA_V2 header (peer-id).
+     *  Mirror of tls_multi->use_peer_id, needed by the MTU/frame calculation
+     *  which only has access to struct options. */
     bool use_peer_id;
     uint32_t peer_id;
 
@@ -756,7 +774,7 @@ struct options
 #define OPT_P_PUSH_MTU        (1u << 30)
 #define OPT_P_ROUTE_TABLE     (1u << 31)
 
-#define OPT_P_DEFAULT (~(OPT_P_INSTANCE | OPT_P_PULL_MODE))
+#define OPT_P_DEFAULT (~(OPT_P_INSTANCE | OPT_P_PULL_MODE | OPT_P_PEER_ID | 0x0ull))
 
 #define PULL_DEFINED(opt) ((opt)->pull)
 
@@ -895,37 +913,6 @@ void init_options(struct options *o);
 void uninit_options(struct options *o);
 
 void setenv_settings(struct env_set *es, const struct options *o);
-
-void show_settings(const struct options *o);
-
-bool string_defined_equal(const char *s1, const char *s2);
-
-const char *options_string_version(const char *s, struct gc_arena *gc);
-
-char *options_string(const struct options *o, const struct frame *frame, struct tuntap *tt,
-                     openvpn_net_ctx_t *ctx, bool remote, struct gc_arena *gc);
-
-bool options_cmp_equal_safe(char *actual, const char *expected, size_t actual_n);
-
-void options_warning_safe(char *actual, const char *expected, size_t actual_n);
-
-bool options_cmp_equal(char *actual, const char *expected);
-
-void options_warning(char *actual, const char *expected);
-
-/**
- * Given an OpenVPN options string, extract the value of an option.
- *
- * @param options_string        Zero-terminated, comma-separated options string
- * @param opt_name              The name of the option to extract
- * @param gc                    The gc to allocate the return value
- *
- * @return gc-allocated value of option with name opt_name if option was found,
- *         or NULL otherwise.
- */
-char *options_string_extract_option(const char *options_string, const char *opt_name,
-                                    struct gc_arena *gc);
-
 
 void options_postprocess(struct options *options, struct env_set *es);
 

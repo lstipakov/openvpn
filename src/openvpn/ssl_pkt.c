@@ -31,6 +31,7 @@
 #include "crypto.h"
 #include "session_id.h"
 #include "reliable.h"
+#include "siphash.h"
 #include "tls_crypt.h"
 
 /*
@@ -144,7 +145,8 @@ tls_wrap_control(struct tls_wrap_ctx *ctx, uint8_t header, struct buffer *buf,
         }
 
         if ((header >> P_OPCODE_SHIFT) == P_CONTROL_HARD_RESET_CLIENT_V3
-            || (header >> P_OPCODE_SHIFT) == P_CONTROL_WKC_V1)
+            || (header >> P_OPCODE_SHIFT) == P_CONTROL_WKC_V1
+            || (header >> P_OPCODE_SHIFT) == P_CONTROL_OOB_WKC_V1)
         {
             if (!buf_copy(&ctx->work, ctx->tls_crypt_v2_wkc))
             {
@@ -166,7 +168,7 @@ write_control_auth(struct tls_session *session, struct key_state *ks, struct buf
                    bool prepend_ack)
 {
     ASSERT(ks->key_id >= 0 && ks->key_id <= P_KEY_ID_MASK);
-    ASSERT(opcode >= 0 && opcode <= P_LAST_OPCODE);
+    ASSERT(opcode_valid_in_session(opcode));
     uint8_t header = (uint8_t)(ks->key_id | (opcode << P_OPCODE_SHIFT));
 
     /* Workaround for Softether servers. Softether has a bug that it only
@@ -192,15 +194,15 @@ write_control_auth(struct tls_session *session, struct key_state *ks, struct buf
 
 bool
 read_control_auth(struct buffer *buf, struct tls_wrap_ctx *ctx,
-                  const struct link_socket_actual *from, const struct tls_options *opt,
-                  bool initial_packet)
+                  const struct link_socket_actual *from, const struct tls_options *opt)
 {
     struct gc_arena gc = gc_new();
     bool ret = false;
 
     const uint8_t opcode = *(BPTR(buf)) >> P_OPCODE_SHIFT;
-    if ((opcode == P_CONTROL_HARD_RESET_CLIENT_V3 || opcode == P_CONTROL_WKC_V1)
-        && !tls_crypt_v2_extract_client_key(buf, ctx, opt, initial_packet))
+    if ((opcode == P_CONTROL_HARD_RESET_CLIENT_V3 || opcode == P_CONTROL_WKC_V1
+         || opcode == P_CONTROL_OOB_WKC_V1)
+        && !tls_crypt_v2_extract_client_key(buf, ctx, opt))
     {
         msg(D_TLS_ERRORS, "TLS Error: can not extract tls-crypt-v2 client key from %s",
             print_link_socket_actual(from, &gc));
@@ -273,7 +275,6 @@ void
 free_tls_pre_decrypt_state(struct tls_pre_decrypt_state *state)
 {
     free_buf(&state->newbuf);
-    free_buf(&state->tls_wrap_tmp.tls_crypt_v2_metadata);
     if (state->tls_wrap_tmp.cleanup_key_ctx)
     {
         free_key_ctx_bi(&state->tls_wrap_tmp.opt.key_ctx_bi);
@@ -315,7 +316,8 @@ tls_pre_decrypt_lite(const struct tls_auth_standalone *tas, struct tls_pre_decry
 
     /* Allow only the reset packet or the first packet of the actual handshake. */
     if (op != P_CONTROL_HARD_RESET_CLIENT_V2 && op != P_CONTROL_HARD_RESET_CLIENT_V3
-        && op != P_CONTROL_V1 && op != P_CONTROL_WKC_V1 && op != P_ACK_V1)
+        && op != P_CONTROL_V1 && op != P_CONTROL_WKC_V1 && op != P_ACK_V1
+        && !opcode_is_oob(op))
     {
         /*
          * This can occur due to bogus data or DoS packets.
@@ -351,7 +353,7 @@ tls_pre_decrypt_lite(const struct tls_auth_standalone *tas, struct tls_pre_decry
     /* HMAC test and unwrapping the encrypted part of the control message
      * into newbuf or just setting newbuf to point to the start of control
      * message */
-    bool status = read_control_auth(&state->newbuf, &state->tls_wrap_tmp, from, NULL, true);
+    bool status = read_control_auth(&state->newbuf, &state->tls_wrap_tmp, from, NULL);
 
     if (!status)
     {
@@ -389,6 +391,16 @@ tls_pre_decrypt_lite(const struct tls_auth_standalone *tas, struct tls_pre_decry
     else if (op == P_CONTROL_WKC_V1)
     {
         return VERDICT_VALID_WKC_V1;
+    }
+    else if (op == P_CONTROL_OOB_V1)
+    {
+        return VERDICT_VALID_OOB_V1;
+    }
+    else if (op == P_CONTROL_OOB_WKC_V1)
+    {
+        /* The WKc was unwrapped by read_control_auth() above, so the per-client
+         * key is already loaded into state->tls_wrap_tmp. */
+        return VERDICT_VALID_OOB_WKC_V1;
     }
     else
     {
@@ -444,64 +456,79 @@ tls_reset_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
     return buf;
 }
 
-hmac_ctx_t *
-session_id_hmac_init(void)
+struct buffer
+tls_wrap_oob_standalone(struct tls_wrap_ctx *ctx, struct tls_auth_standalone *tas,
+                        struct session_id *own_sid, const struct buffer *payload, int opcode)
 {
-    /* We assume that SHA256 is always available */
-    ASSERT(md_valid("SHA256"));
-    hmac_ctx_t *hmac_ctx = hmac_ctx_new();
+    ASSERT(opcode_is_oob(opcode));
 
-    uint8_t key[SHA256_DIGEST_LENGTH];
-    ASSERT(rand_bytes(key, sizeof(key)));
+    /* Copy buffer here to point at the same data but allow tls_wrap_control
+     * to potentially change buf to point to another buffer without
+     * modifying the buffer in tas */
+    struct buffer buf = tas->workbuf;
+    ASSERT(buf_init(&buf, tas->frame.buf.headroom));
 
-    hmac_ctx_init(hmac_ctx, key, "SHA256");
-    return hmac_ctx;
+    /* Out-of-band messages carry the payload directly, with no reliability
+     * or ACK fields. */
+    ASSERT(buf_copy(&buf, payload));
+
+    uint8_t header = (uint8_t)(opcode << P_OPCODE_SHIFT);
+
+    /* Add tls-auth/tls-crypt wrapping, this might replace buf with
+     * ctx->work. For P_CONTROL_OOB_WKC_V1 the wrapped client key is appended
+     * here too (tls-crypt-v2). */
+    tls_wrap_control(ctx, header, &buf, own_sid);
+
+    return buf;
 }
 
 struct session_id
 calculate_session_id_hmac(struct session_id client_sid, const struct openvpn_sockaddr *from,
-                          hmac_ctx_t *hmac, int handwindow, int offset)
+                          const uint8_t *key, int handwindow, int offset)
 {
-    union
-    {
-        uint8_t hmac_result[SHA256_DIGEST_LENGTH];
-        struct session_id sid;
-    } result;
-
     /* Get the valid time quantisation for our hmac,
      * we divide time by handwindow/2 and allow the previous
      * and future session time if specified by offset */
     uint32_t session_id_time = ntohl((uint32_t)(now / ((handwindow + 1) / 2) + offset));
 
-    hmac_ctx_reset(hmac);
+    uint8_t input[64];
+
+    /* ensure input array is large enough */
+    static_assert(sizeof(input) >= sizeof(struct sockaddr_in6) + sizeof(session_id_time) + sizeof(client_sid.id), "input buffer not sized correctly");
+    static_assert(sizeof(input) >= sizeof(struct sockaddr_in) + sizeof(session_id_time) + sizeof(client_sid.id), "input buffer not sized correctly");
+
+    struct buffer in = { 0 };
+    buf_set_write(&in, input, sizeof(input));
+
     /* We do not care about endian here since it does not need to be
      * portable */
-    hmac_ctx_update(hmac, (const uint8_t *)&session_id_time, sizeof(session_id_time));
+    buf_write(&in, (const uint8_t *)&session_id_time, sizeof(session_id_time));
 
     /* add client IP and port */
     switch (from->addr.sa.sa_family)
     {
         case AF_INET:
-            hmac_ctx_update(hmac, (const uint8_t *)&from->addr.in4, sizeof(struct sockaddr_in));
+            buf_write(&in, (const uint8_t *)&from->addr.in4, sizeof(struct sockaddr_in));
             break;
 
         case AF_INET6:
-            hmac_ctx_update(hmac, (const uint8_t *)&from->addr.in6, sizeof(struct sockaddr_in6));
+            buf_write(&in, (const uint8_t *)&from->addr.in6, sizeof(struct sockaddr_in6));
             break;
     }
 
     /* add session id of client */
-    hmac_ctx_update(hmac, client_sid.id, SID_SIZE);
+    buf_write(&in, client_sid.id, SID_SIZE);
 
-    hmac_ctx_final(hmac, result.hmac_result);
+    struct session_id sid;
+    siphash(buf_bptr(&in), buf_len(&in), key, sid.id, sizeof(sid.id));
 
-    return result.sid;
+    return sid;
 }
 
 bool
 check_session_hmac_and_pkt_id(struct tls_pre_decrypt_state *state,
                               const struct openvpn_sockaddr *from,
-                              hmac_ctx_t *hmac,
+                              uint8_t *key,
                               int handwindow,
                               bool pkt_is_ack)
 {
@@ -553,7 +580,7 @@ check_session_hmac_and_pkt_id(struct tls_pre_decrypt_state *state,
     for (int offset = -2; offset <= 0; offset++)
     {
         struct session_id expected_id =
-            calculate_session_id_hmac(state->peer_session_id, from, hmac, handwindow, offset);
+            calculate_session_id_hmac(state->peer_session_id, from, key, handwindow, offset);
 
         if (memcmp_constant_time(&expected_id, &state->server_session_id, SID_SIZE) == 0)
         {

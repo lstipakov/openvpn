@@ -889,7 +889,7 @@ env_block(const struct env_set *es)
 
     if (es)
     {
-        struct env_item *e;
+        const struct env_item *e;
         char *ret;
         char *p;
         size_t nchars = 1;
@@ -1587,14 +1587,13 @@ plugin_in_trusted_dir(const WCHAR *plugin_path)
     }
 
     /* Check if the plugin path resides within the plugin/install directory */
-    if ((wcslen(normalized_plugin_dir) > 0)
-        && (wcsnicmp(normalized_plugin_dir, plugin_path, wcslen(normalized_plugin_dir)) == 0))
+    if (win_path_in_dir(plugin_path, normalized_plugin_dir))
     {
         return true;
     }
 
     /* Fallback to the system directory */
-    return wcsnicmp(system_dir, plugin_path, wcslen(system_dir)) == 0;
+    return win_path_in_dir(plugin_path, system_dir);
 }
 
 bool

@@ -393,7 +393,7 @@ do_preresolve(struct context *c)
 
             for (int j = 0; j < ce->local_list->len; j++)
             {
-                struct local_entry *le = ce->local_list->array[j];
+                const struct local_entry *le = ce->local_list->array[j];
 
                 if (!le->local)
                 {
@@ -516,34 +516,6 @@ socket_set_mark(socket_descriptor_t sd, int mark)
 #endif
 }
 
-static bool
-socket_set_flags(socket_descriptor_t sd, unsigned int sockflags)
-{
-    /* SF_TCP_NODELAY doesn't make sense for dco-win */
-    if ((sockflags & SF_TCP_NODELAY) && (!(sockflags & SF_DCO_WIN)))
-    {
-        return socket_set_tcp_nodelay(sd, 1);
-    }
-    else
-    {
-        return true;
-    }
-}
-
-bool
-link_socket_update_flags(struct link_socket *sock, unsigned int sockflags)
-{
-    if (sock && socket_defined(sock->sd))
-    {
-        sock->sockflags |= sockflags;
-        return socket_set_flags(sock->sd, sock->sockflags);
-    }
-    else
-    {
-        return false;
-    }
-}
-
 void
 link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int sndbuf)
 {
@@ -593,7 +565,7 @@ create_socket_tcp(struct addrinfo *addrinfo)
 }
 
 static socket_descriptor_t
-create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags)
+create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags, bool optional)
 {
     socket_descriptor_t sd;
 
@@ -603,7 +575,8 @@ create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags)
     if ((sd = socket(addrinfo->ai_family, addrinfo->ai_socktype, addrinfo->ai_protocol))
         == SOCKET_UNDEFINED)
     {
-        msg(M_ERR, "UDP: Cannot create UDP/UDP6 socket");
+        msg(optional ? D_LOW | M_ERRNO : M_ERR, "UDP: Cannot create UDP/UDP6 socket");
+        return SOCKET_UNDEFINED;
     }
 #if ENABLE_IP_PKTINFO
     else if (flags & SF_USE_IP_PKTINFO)
@@ -647,34 +620,87 @@ create_socket_udp(struct addrinfo *addrinfo, const unsigned int flags)
 }
 
 static void
-bind_local(struct link_socket *sock, const sa_family_t ai_family)
+bind_local(struct link_socket *sock)
 {
     /* bind to local address/port */
     if (sock->bind_local)
     {
         if (sock->socks_proxy && sock->info.proto == PROTO_UDP)
         {
-            socket_bind(sock->ctrl_sd, sock->info.lsa->bind_local, ai_family, "SOCKS", false);
+            socket_bind(sock->ctrl_sd, sock->info.lsa->bind_local, sock->info.af, "SOCKS", false);
         }
         else
         {
-            socket_bind(sock->sd, sock->info.lsa->bind_local, ai_family, "TCP/UDP",
+            socket_bind(sock->sd, sock->info.lsa->bind_local, sock->info.af, "TCP/UDP",
                         sock->info.bind_ipv6_only);
         }
     }
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
+/* The per-socket options every link socket gets right after creation. */
+static void
+socket_apply_options(socket_descriptor_t sd, const struct socket_buffer_size *sbs, int mark,
+                     const char *bind_dev)
+{
+    /* set socket buffers based on --sndbuf and --rcvbuf options */
+    socket_set_buffers(sd, sbs, true);
+
+    /* set socket to --mark packets with given value */
+    socket_set_mark(sd, mark);
+
+#if defined(TARGET_LINUX)
+    if (bind_dev)
+    {
+        msg(M_INFO, "Using bind-dev %s", bind_dev);
+        /* Note: We verify strlen of bind_dev in options parsing */
+        if (setsockopt(sd, SOL_SOCKET, SO_BINDTODEVICE, bind_dev, (socklen_t)(strlen(bind_dev) + 1))
+            != 0)
+        {
+            msg(M_WARN | M_ERRNO, "WARN: setsockopt SO_BINDTODEVICE=%s failed", bind_dev);
+        }
+    }
+#else
+    (void)bind_dev;
 #endif
+}
+
+socket_descriptor_t
+create_socket_udp_configured(sa_family_t af, unsigned int sockflags, const struct socket_buffer_size *sbs,
+                             int mark, const char *bind_dev, struct addrinfo *bind_addr,
+                             bool bind_ipv6_only, bool optional)
+{
+    struct addrinfo ai = { .ai_family = af, .ai_socktype = SOCK_DGRAM, .ai_protocol = IPPROTO_UDP };
+    socket_descriptor_t sd = create_socket_udp(&ai, sockflags, optional);
+
+    if (sd == SOCKET_UNDEFINED)
+    {
+        return SOCKET_UNDEFINED;
+    }
+
+    socket_apply_options(sd, sbs, mark, bind_dev);
+    if (bind_addr)
+    {
+        socket_bind(sd, bind_addr, af, "TCP/UDP", bind_ipv6_only);
+    }
+    return sd;
+}
 
 static void
 create_socket(struct link_socket *sock, struct addrinfo *addr)
 {
+    /* Set af field of sock->info, so it always reflects the address family
+     * of the created socket */
+    sock->info.af = (sa_family_t)addr->ai_family;
+
     if (addr->ai_protocol == IPPROTO_UDP || addr->ai_socktype == SOCK_DGRAM)
     {
-        sock->sd = create_socket_udp(addr, sock->sockflags);
+        /* With a SOCKS proxy the local bind goes on the control socket instead
+         * (see bind_local()), so the UDP socket is created unbound then. */
+        struct addrinfo *bind_addr =
+            (sock->bind_local && !sock->socks_proxy) ? sock->info.lsa->bind_local : NULL;
+        sock->sd = create_socket_udp_configured(sock->info.af, sock->sockflags, &sock->socket_buffer_sizes,
+                                                sock->mark, sock->bind_dev, bind_addr,
+                                                sock->info.bind_ipv6_only, false);
         sock->sockflags |= SF_GETADDRINFO_DGRAM;
 
         /* Assume that control socket and data socket to the socks proxy
@@ -688,45 +714,20 @@ create_socket(struct link_socket *sock, struct addrinfo *addr)
             addrinfo_tmp.ai_socktype = SOCK_STREAM;
             addrinfo_tmp.ai_protocol = IPPROTO_TCP;
             sock->ctrl_sd = create_socket_tcp(&addrinfo_tmp);
+            bind_local(sock);
         }
     }
     else if (addr->ai_protocol == IPPROTO_TCP || addr->ai_socktype == SOCK_STREAM)
     {
         sock->sd = create_socket_tcp(addr);
+        socket_apply_options(sock->sd, &sock->socket_buffer_sizes, sock->mark, sock->bind_dev);
+        bind_local(sock);
     }
     else
     {
         ASSERT(0);
     }
-    /* Set af field of sock->info, so it always reflects the address family
-     * of the created socket */
-    sock->info.af = addr->ai_family;
-
-    /* set socket buffers based on --sndbuf and --rcvbuf options */
-    socket_set_buffers(sock->sd, &sock->socket_buffer_sizes, true);
-
-    /* set socket to --mark packets with given value */
-    socket_set_mark(sock->sd, sock->mark);
-
-#if defined(TARGET_LINUX)
-    if (sock->bind_dev)
-    {
-        msg(M_INFO, "Using bind-dev %s", sock->bind_dev);
-        if (setsockopt(sock->sd, SOL_SOCKET, SO_BINDTODEVICE, sock->bind_dev,
-                       strlen(sock->bind_dev) + 1)
-            != 0)
-        {
-            msg(M_WARN | M_ERRNO, "WARN: setsockopt SO_BINDTODEVICE=%s failed", sock->bind_dev);
-        }
-    }
-#endif
-
-    bind_local(sock, addr->ai_family);
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #ifdef TARGET_ANDROID
 static void
@@ -926,12 +927,10 @@ socket_bind(socket_descriptor_t sd, struct addrinfo *local, int ai_family, const
      * What is the correct way to deal with it?
      */
 
-    struct addrinfo *cur;
-
     ASSERT(local);
 
-
     /* find the first addrinfo with correct ai_family */
+    const struct addrinfo *cur;
     for (cur = local; cur; cur = cur->ai_next)
     {
         if (cur->ai_family == ai_family)
@@ -1130,7 +1129,7 @@ static void stream_buf_init(struct stream_buf *sb, struct buffer *buf, const uns
 
 static void stream_buf_close(struct stream_buf *sb);
 
-static bool stream_buf_added(struct stream_buf *sb, int length_added);
+static bool stream_buf_added(struct stream_buf *sb, ssize_t length_added);
 
 /* For stream protocols, allocate a buffer to build up packet.
  * Called after frame has been finalized. */
@@ -1159,13 +1158,8 @@ socket_frame_init(const struct frame *frame, struct link_socket *sock)
     }
 }
 
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wconversion"
-#endif
-
 static void
-resolve_bind_local(struct link_socket *sock, const sa_family_t af)
+resolve_bind_local(struct link_socket *sock)
 {
     struct gc_arena gc = gc_new();
 
@@ -1181,12 +1175,12 @@ resolve_bind_local(struct link_socket *sock, const sa_family_t af)
         }
 
         /* will return AF_{INET|INET6}from local_host */
-        status = get_cached_dns_entry(sock->dns_cache, sock->local_host, sock->local_port, af,
+        status = get_cached_dns_entry(sock->dns_cache, sock->local_host, sock->local_port, sock->info.af,
                                       flags, &sock->info.lsa->bind_local);
 
         if (status)
         {
-            status = openvpn_getaddrinfo(flags, sock->local_host, sock->local_port, 0, NULL, af,
+            status = openvpn_getaddrinfo(flags, sock->local_host, sock->local_port, 0, NULL, sock->info.af,
                                          &sock->info.lsa->bind_local);
         }
 
@@ -1207,7 +1201,7 @@ resolve_bind_local(struct link_socket *sock, const sa_family_t af)
             /* the resolved 'local entry' might have a different family than
              * what was globally configured
              */
-            sock->info.af = sock->info.lsa->bind_local->ai_family;
+            sock->info.af = (sa_family_t)sock->info.lsa->bind_local->ai_family;
         }
     }
 
@@ -1410,7 +1404,8 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
 
     sock->mark = o->mark;
     sock->bind_dev = o->bind_dev;
-    sock->info.proto = proto;
+    ASSERT(proto >= 0 && proto < PROTO_N);
+    sock->info.proto = (uint8_t)proto;
     sock->info.af = o->ce.af;
     sock->info.remote_float = o->ce.remote_float;
     sock->info.lsa = &c->c1.link_socket_addrs[sock_index];
@@ -1427,6 +1422,23 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
         sock->sd = c->c2.accept_from->sd;
         /* inherit (possibly guessed) info AF from parent context */
         sock->info.af = c->c2.accept_from->info.af;
+    }
+    else if (mode == LS_MODE_UDP_ADOPT)
+    {
+        /* Adopt the OOB probe socket. create_socket_udp_configured() set it up with this
+         * socket's options and bind, so it only changes hands and keeps the source
+         * IP:port the server's cookie is bound to; phase 2 creates nothing. */
+        ASSERT(c->c2.oob_probe_sd != SOCKET_UNDEFINED);
+        sock->sd = c->c2.oob_probe_sd;
+        c->c2.oob_probe_sd = SOCKET_UNDEFINED; /* ownership moves to the link socket */
+        sock->info.af = c->c2.oob_probe_remote.addr.sa.sa_family;
+        sock->bind_local = false;              /* bound (or --nobind) by the prober already */
+        sock->sockflags |= SF_GETADDRINFO_DGRAM;
+
+        /* Pin the exact address we probed so the connection targets the address
+         * the cookie was minted for; resolve_remote() preserves a defined actual. */
+        CLEAR(sock->info.lsa->actual);
+        sock->info.lsa->actual.dest = c->c2.oob_probe_remote;
     }
 
     /* are we running in HTTP proxy mode? */
@@ -1476,7 +1488,7 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
     {
         if (sock->bind_local)
         {
-            resolve_bind_local(sock, sock->info.af);
+            resolve_bind_local(sock);
         }
         resolve_remote(sock, 1, NULL);
     }
@@ -1485,8 +1497,12 @@ link_socket_init_phase1(struct context *c, int sock_index, int mode)
 static void
 phase2_set_socket_flags(struct link_socket *sock)
 {
-    /* set misc socket parameters */
-    socket_set_flags(sock->sd, sock->sockflags);
+    /* TCP_NODELAY is enabled by default on every TCP socket; dco-win is
+     * skipped as it manages its own socket */
+    if (proto_is_tcp(sock->info.proto) && !(sock->sockflags & SF_DCO_WIN))
+    {
+        socket_set_tcp_nodelay(sock->sd, 1);
+    }
 
     /* set socket to non-blocking mode */
     set_nonblock(sock->sd);
@@ -1508,13 +1524,25 @@ linksock_print_addr(struct link_socket *sock)
     const msglvl_t msglevel = (sock->mode == LS_MODE_TCP_ACCEPT_FROM) ? D_INIT_MEDIUM : M_INFO;
 
     /* print local address */
-    if (sock->bind_local)
+    if (sock->mode == LS_MODE_UDP_ADOPT)
+    {
+        /* bound (or not) by the prober, so ask the socket itself */
+        struct sockaddr_storage local = { 0 };
+        socklen_t len = sizeof(local);
+        if (!getsockname(sock->sd, (struct sockaddr *)&local, &len))
+        {
+            msg(msglevel, "%s link local (adopted): %s",
+                proto2ascii(sock->info.proto, sock->info.af, true),
+                print_sockaddr((struct sockaddr *)&local, &gc));
+        }
+    }
+    else if (sock->bind_local)
     {
         sa_family_t ai_family = sock->info.lsa->actual.dest.addr.sa.sa_family;
         /* Socket is always bound on the first matching address,
          * For bound sockets with no remote addr this is the element of
          * the list */
-        struct addrinfo *cur;
+        const struct addrinfo *cur;
         for (cur = sock->info.lsa->bind_local; cur; cur = cur->ai_next)
         {
             if (!ai_family || ai_family == cur->ai_family)
@@ -1645,7 +1673,7 @@ static void
 create_socket_dco_win(struct context *c, struct link_socket *sock, struct signal_info *sig_info)
 {
     /* in P2P mode we must have remote resolved at this point */
-    struct addrinfo *remoteaddr = sock->info.lsa->current_remote;
+    const struct addrinfo *remoteaddr = sock->info.lsa->current_remote;
     if ((c->options.mode == MODE_POINT_TO_POINT) && (!remoteaddr))
     {
         return;
@@ -1720,7 +1748,7 @@ link_socket_init_phase2(struct context *c, struct link_socket *sock)
         goto done;
     }
 #endif
-    if (sock->info.lsa->current_remote)
+    if (sock->mode != LS_MODE_UDP_ADOPT && sock->info.lsa->current_remote)
     {
         create_socket(sock, sock->info.lsa->current_remote);
     }
@@ -1737,9 +1765,9 @@ link_socket_init_phase2(struct context *c, struct link_socket *sock)
              * and we should not connect a remote */
             if (sock->info.af == AF_UNSPEC)
             {
+                sock->info.af = (sa_family_t)sock->info.lsa->bind_local->ai_family;
                 msg(M_WARN, "Could not determine IPv4/IPv6 protocol. Using %s",
-                    addr_family_name(sock->info.lsa->bind_local->ai_family));
-                sock->info.af = sock->info.lsa->bind_local->ai_family;
+                    addr_family_name(sock->info.af));
             }
             create_socket(sock, sock->info.lsa->bind_local);
         }
@@ -1930,7 +1958,7 @@ link_socket_bad_incoming_addr(struct buffer *buf, const struct link_socket_info 
                               const struct link_socket_actual *from_addr)
 {
     struct gc_arena gc = gc_new();
-    struct addrinfo *ai;
+    const struct addrinfo *ai;
 
     switch (from_addr->dest.addr.sa.sa_family)
     {
@@ -2166,12 +2194,13 @@ stream_buf_read_setup_dowork(struct stream_buf *sb)
  * @return true if \c sb->buf contains fully reassembled packet
  */
 static bool
-stream_buf_added(struct stream_buf *sb, int length_added)
+stream_buf_added(struct stream_buf *sb, ssize_t length_added)
 {
-    dmsg(D_STREAM_DEBUG, "STREAM: ADD length_added=%d", length_added);
+    dmsg(D_STREAM_DEBUG, "STREAM: ADD length_added=%zd", length_added);
     if (length_added > 0)
     {
-        sb->buf.len += length_added;
+        ASSERT(sb->buf.len + length_added <= INT_MAX);
+        sb->buf.len += (int)length_added;
     }
 
     /* if length unknown, see if we can get the length prefix from
@@ -2273,10 +2302,10 @@ bad_address_length(int actual, int expected)
  * Socket Read Routines
  */
 
-int
+ssize_t
 link_socket_read_tcp(struct link_socket *sock, struct buffer *buf)
 {
-    int len = 0;
+    ssize_t len = 0;
 
     if (!sock->stream_buf.residual_fully_formed)
     {
@@ -2306,7 +2335,8 @@ link_socket_read_tcp(struct link_socket *sock, struct buffer *buf)
         }
         if (len <= 0)
         {
-            return buf->len = len;
+            buf->len = 0;
+            return len;
         }
     }
 
@@ -2338,14 +2368,14 @@ link_socket_read_tcp(struct link_socket *sock, struct buffer *buf)
     max_int(CMSG_SPACE(sizeof(struct in6_pktinfo)), CMSG_SPACE(sizeof(struct in_addr)))
 #endif
 
-static socklen_t
+static ssize_t
 link_socket_read_udp_posix_recvmsg(struct link_socket *sock, struct buffer *buf,
-                                   struct link_socket_actual *from)
+                                   struct link_socket_actual *from, socklen_t *fromlen)
 {
     struct iovec iov;
     uint8_t pktinfo_buf[PKTINFO_BUF_SIZE];
     struct msghdr mesg = { 0 };
-    socklen_t fromlen = sizeof(from->dest.addr);
+    *fromlen = sizeof(from->dest.addr);
 
     ASSERT(sock->sd >= 0); /* can't happen */
 
@@ -2354,62 +2384,67 @@ link_socket_read_udp_posix_recvmsg(struct link_socket *sock, struct buffer *buf,
     mesg.msg_iov = &iov;
     mesg.msg_iovlen = 1;
     mesg.msg_name = &from->dest.addr;
-    mesg.msg_namelen = fromlen;
+    mesg.msg_namelen = *fromlen;
     mesg.msg_control = pktinfo_buf;
-    mesg.msg_controllen = sizeof pktinfo_buf;
-    buf->len = recvmsg(sock->sd, &mesg, 0);
-    if (buf->len >= 0)
+    mesg.msg_controllen = (socklen_t)sizeof(pktinfo_buf);
+    ssize_t len = recvmsg(sock->sd, &mesg, 0);
+    if (len < 0)
     {
-        struct cmsghdr *cmsg;
-        fromlen = mesg.msg_namelen;
-        cmsg = CMSG_FIRSTHDR(&mesg);
-        if (cmsg != NULL && CMSG_NXTHDR(&mesg, cmsg) == NULL
+        buf->len = 0;
+        return len;
+    }
+    ASSERT(len <= INT_MAX);
+    buf->len = (int)len;
+    struct cmsghdr *cmsg;
+    *fromlen = mesg.msg_namelen;
+    cmsg = CMSG_FIRSTHDR(&mesg);
+    if (cmsg != NULL && CMSG_NXTHDR(&mesg, cmsg) == NULL
 #if defined(HAVE_IN_PKTINFO) && defined(HAVE_IPI_SPEC_DST)
-            && cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_PKTINFO
-            && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in_pktinfo)))
+        && cmsg->cmsg_level == SOL_IP && cmsg->cmsg_type == IP_PKTINFO
+        && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in_pktinfo)))
 #elif defined(IP_RECVDSTADDR)
-            && cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_RECVDSTADDR
-            && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in_addr)))
+        && cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_RECVDSTADDR
+        && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in_addr)))
 #else /* if defined(HAVE_IN_PKTINFO) && defined(HAVE_IPI_SPEC_DST) */
 #error ENABLE_IP_PKTINFO is set without IP_PKTINFO xor IP_RECVDSTADDR (fix syshead.h)
 #endif
-        {
+    {
 #if defined(HAVE_IN_PKTINFO) && defined(HAVE_IPI_SPEC_DST)
-            struct in_pktinfo *pkti = (struct in_pktinfo *)CMSG_DATA(cmsg);
-            from->pi.in4.ipi_ifindex =
-                (sock->sockflags & SF_PKTINFO_COPY_IIF) ? pkti->ipi_ifindex : 0;
-            from->pi.in4.ipi_spec_dst = pkti->ipi_spec_dst;
+        struct in_pktinfo *pkti = (struct in_pktinfo *)CMSG_DATA(cmsg);
+        from->pi.in4.ipi_ifindex =
+            (sock->sockflags & SF_PKTINFO_COPY_IIF) ? pkti->ipi_ifindex : 0;
+        from->pi.in4.ipi_spec_dst = pkti->ipi_spec_dst;
 #elif defined(IP_RECVDSTADDR)
-            from->pi.in4 = *(struct in_addr *)CMSG_DATA(cmsg);
+        from->pi.in4 = *(struct in_addr *)CMSG_DATA(cmsg);
 #else /* if defined(HAVE_IN_PKTINFO) && defined(HAVE_IPI_SPEC_DST) */
 #error ENABLE_IP_PKTINFO is set without IP_PKTINFO xor IP_RECVDSTADDR (fix syshead.h)
 #endif
-        }
-        else if (cmsg != NULL && CMSG_NXTHDR(&mesg, cmsg) == NULL
-                 && cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO
-                 && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in6_pktinfo)))
-        {
-            struct in6_pktinfo *pkti6 = (struct in6_pktinfo *)CMSG_DATA(cmsg);
-            from->pi.in6.ipi6_ifindex =
-                (sock->sockflags & SF_PKTINFO_COPY_IIF) ? pkti6->ipi6_ifindex : 0;
-            from->pi.in6.ipi6_addr = pkti6->ipi6_addr;
-        }
-        else if (cmsg != NULL)
-        {
-            msg(M_WARN,
-                "CMSG received that cannot be parsed (cmsg_level=%d, cmsg_type=%d, cmsg=len=%d)",
-                (int)cmsg->cmsg_level, (int)cmsg->cmsg_type, (int)cmsg->cmsg_len);
-        }
+    }
+    else if (cmsg != NULL && CMSG_NXTHDR(&mesg, cmsg) == NULL
+             && cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO
+             && cmsg->cmsg_len >= CMSG_LEN(sizeof(struct in6_pktinfo)))
+    {
+        struct in6_pktinfo *pkti6 = (struct in6_pktinfo *)CMSG_DATA(cmsg);
+        from->pi.in6.ipi6_ifindex =
+            (sock->sockflags & SF_PKTINFO_COPY_IIF) ? pkti6->ipi6_ifindex : 0;
+        from->pi.in6.ipi6_addr = pkti6->ipi6_addr;
+    }
+    else if (cmsg != NULL)
+    {
+        msg(M_WARN,
+            "CMSG received that cannot be parsed (cmsg_level=%d, cmsg_type=%d, cmsg=len=%zu)",
+            cmsg->cmsg_level, cmsg->cmsg_type, (size_t)cmsg->cmsg_len);
     }
 
-    return fromlen;
+    return buf->len;
 }
 #endif /* if ENABLE_IP_PKTINFO */
 
-int
+ssize_t
 link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
                            struct link_socket_actual *from)
 {
+    ssize_t recvlen;
     socklen_t fromlen = sizeof(from->dest.addr);
     socklen_t expectedlen = af_addr_size(sock->info.af);
     addr_zero_host(&from->dest);
@@ -2420,16 +2455,23 @@ link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
     /* Both PROTO_UDPv4 and PROTO_UDPv6 */
     if (sock->info.proto == PROTO_UDP && sock->sockflags & SF_USE_IP_PKTINFO)
     {
-        fromlen = link_socket_read_udp_posix_recvmsg(sock, buf, from);
+        recvlen = link_socket_read_udp_posix_recvmsg(sock, buf, from, &fromlen);
     }
     else
 #endif
     {
-        buf->len = recvfrom(sock->sd, BPTR(buf), buf_forward_capacity(buf), 0, &from->dest.addr.sa,
-                            &fromlen);
+        recvlen = recvfrom(sock->sd, BPTR(buf), buf_forward_capacity(buf), 0,
+                           &from->dest.addr.sa, &fromlen);
     }
+    if (recvlen < 0)
+    {
+        buf->len = 0;
+        return recvlen;
+    }
+    ASSERT(recvlen <= INT_MAX);
+    buf->len = (int)recvlen;
     /* FIXME: won't do anything when sock->info.af == AF_UNSPEC */
-    if (buf->len >= 0 && expectedlen && fromlen != expectedlen)
+    if (expectedlen && fromlen != expectedlen)
     {
         bad_address_length(fromlen, expectedlen);
     }
@@ -2445,7 +2487,9 @@ link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
 ssize_t
 link_socket_write_tcp(struct link_socket *sock, struct buffer *buf, struct link_socket_actual *to)
 {
-    packet_size_type len = (packet_size_type)BLENZ(buf);
+    const int blen = BLEN(buf);
+    ASSERT(blen >= 0 && blen <= PACKET_SIZE_MAX);
+    packet_size_type len = (packet_size_type)blen;
     dmsg(D_STREAM_DEBUG, "STREAM: WRITE %u offset=%d", len, buf->offset);
     ASSERT(len <= sock->stream_buf.maxlen);
     len = htonps(len);
@@ -2456,10 +2500,6 @@ link_socket_write_tcp(struct link_socket *sock, struct buffer *buf, struct link_
     return link_socket_write_tcp_posix(sock, buf);
 #endif
 }
-
-#if defined(__GNUC__) || defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
 
 #if ENABLE_IP_PKTINFO
 
@@ -2969,6 +3009,8 @@ socket_set(struct link_socket *s, struct event_set *es, unsigned int rwflags, vo
     return rwflags;
 }
 
+#if UNIX_SOCK_SUPPORT
+
 void
 sd_close(socket_descriptor_t *sd)
 {
@@ -2978,8 +3020,6 @@ sd_close(socket_descriptor_t *sd)
         *sd = SOCKET_UNDEFINED;
     }
 }
-
-#if UNIX_SOCK_SUPPORT
 
 /*
  * code for unix domain sockets

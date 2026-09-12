@@ -248,6 +248,7 @@ endif()
 check_symbol_exists(chsize io.h HAVE_CHSIZE)
 check_symbol_exists(getrlimit sys/resource.h HAVE_GETRLIMIT)
 check_symbol_exists(strsep string.h HAVE_STRSEP)
+check_symbol_exists(strtok_r string.h HAVE_STRTOK_R)
 
 # Some OS (e.g. FreeBSD) need some basic headers to allow
 # including network headers
@@ -259,7 +260,6 @@ endif ()
 
 check_include_files(arpa/inet.h HAVE_ARPA_INET_H)
 check_include_files(dlfcn.h HAVE_DLFCN_H)
-check_include_files(dmalloc.h HAVE_DMALLOC_H)
 check_include_files(fcntl.h HAVE_FCNTL_H)
 check_include_files(err.h HAVE_ERR_H)
 check_include_files(netdb.h HAVE_NETDB_H)
@@ -327,6 +327,7 @@ function(add_library_deps target)
     elseif (${WOLFSSL})
         pkg_search_module(wolfssl wolfssl REQUIRED)
         target_link_libraries(${target} PUBLIC ${wolfssl_LINK_LIBRARIES})
+        target_include_directories(${target} PRIVATE ${wolfssl_INCLUDE_DIRS})
         target_include_directories(${target} PRIVATE ${wolfssl_INCLUDE_DIRS}/wolfssl)
     else ()
         find_package(OpenSSL REQUIRED)
@@ -367,6 +368,7 @@ if (${MBED})
 elseif (${WOLFSSL})
     set(ENABLE_CRYPTO_OPENSSL YES)
     set(ENABLE_CRYPTO_WOLFSSL YES)
+    set(EXTERNAL_OPTS_OPENVPN YES)
 else ()
     set(ENABLE_CRYPTO_OPENSSL YES)
 endif ()
@@ -383,12 +385,20 @@ if (BUILD_TESTING)
     find_package(cmocka CONFIG)
     if (TARGET cmocka::cmocka)
         set(CMOCKA_LIBRARIES cmocka::cmocka)
+        get_target_property(CMOCKA_INCLUDE_DIRS cmocka::cmocka INTERFACE_INCLUDE_DIRECTORIES)
     else ()
         pkg_search_module(cmocka cmocka REQUIRED IMPORTED_TARGET)
         set(CMOCKA_LIBRARIES PkgConfig::cmocka)
+        set(CMOCKA_INCLUDE_DIRS ${cmocka_INCLUDE_DIRS})
     endif ()
-    set(CMAKE_REQUIRED_LIBRARIES ${CMOCKA_LIBRARIES})
+    # cmocka_version.h exists since cmocka 2.0; its absence selects the
+    # cmocka 1.x compat shims in test_common.h. Detecting a header only needs
+    # the include path - do NOT add cmocka to CMAKE_REQUIRED_LIBRARIES, as that
+    # makes check_include_files link the shared library, which can fail in the
+    # probe for unrelated reasons and wrongly mis-detect cmocka 2.x as < 2.0.
+    set(CMAKE_REQUIRED_INCLUDES ${CMOCKA_INCLUDE_DIRS})
     check_include_files(cmocka_version.h HAVE_CMOCKA_VERSION_H)
+    unset(CMAKE_REQUIRED_INCLUDES)
 endif ()
 
 configure_file(config.h.cmake.in config.h)
@@ -413,6 +423,7 @@ set(SOURCE_FILES
     src/compat/compat-dirname.c
     src/compat/compat-gettimeofday.c
     src/compat/compat-strsep.c
+    src/compat/compat-strtok_r.c
     src/openvpn/argv.c
     src/openvpn/argv.h
     src/openvpn/base64.c
@@ -420,6 +431,8 @@ set(SOURCE_FILES
     src/openvpn/basic.h
     src/openvpn/buffer.c
     src/openvpn/buffer.h
+    src/openvpn/check_file_access.c
+    src/openvpn/check_file_access.h
     src/openvpn/circ_list.h
     src/openvpn/clinat.c
     src/openvpn/clinat.h
@@ -432,6 +445,8 @@ set(SOURCE_FILES
     src/openvpn/console.c
     src/openvpn/console_builtin.c
     src/openvpn/console.h
+    src/openvpn/control_msg.c
+    src/openvpn/control_msg.h
     src/openvpn/crypto.c
     src/openvpn/crypto.h
     src/openvpn/crypto_backend.h
@@ -441,6 +456,8 @@ set(SOURCE_FILES
     src/openvpn/crypto_openssl.h
     src/openvpn/crypto_mbedtls.c
     src/openvpn/crypto_mbedtls.h
+    src/openvpn/crypto_mbedtls_legacy.c
+    src/openvpn/crypto_mbedtls_legacy.h
     src/openvpn/cryptoapi.c
     src/openvpn/cryptoapi.h
     src/openvpn/dco.c
@@ -508,6 +525,10 @@ set(SOURCE_FILES
     src/openvpn/multi_io.c
     src/openvpn/occ.c
     src/openvpn/occ.h
+    src/openvpn/oob.c
+    src/openvpn/oob.h
+    src/openvpn/oob_client.c
+    src/openvpn/oob_client.h
     src/openvpn/openvpn.c
     src/openvpn/openvpn.h
     src/openvpn/openvpn_win32_resources.rc
@@ -516,6 +537,10 @@ set(SOURCE_FILES
     src/openvpn/options_util.c
     src/openvpn/options_util.h
     src/openvpn/options_parse.c
+    src/openvpn/options_show.c
+    src/openvpn/options_show.h
+    src/openvpn/options_string.c
+    src/openvpn/options_string.h
     src/openvpn/otime.c
     src/openvpn/otime.h
     src/openvpn/ovpn_dco_win.h
@@ -560,6 +585,9 @@ set(SOURCE_FILES
     src/openvpn/shaper.h
     src/openvpn/sig.c
     src/openvpn/sig.h
+    src/openvpn/siphash.c
+    src/openvpn/siphash.h
+    src/openvpn/siphash_reference.c
     src/openvpn/socket.c
     src/openvpn/socket.h
     src/openvpn/socket_util.c
@@ -655,6 +683,7 @@ if (BUILD_TESTING)
         "test_mbuf"
         "test_misc"
         "test_ncp"
+        "test_oob"
         "test_options_parse"
         "test_packet_id"
         "test_pkt"
@@ -733,6 +762,8 @@ if (BUILD_TESTING)
             src/openvpn/platform.c
             src/openvpn/win32-util.c
             src/compat/compat-gettimeofday.c
+            src/compat/compat-strsep.c
+            src/compat/compat-strtok_r.c
             )
 
         add_library_deps(${test_name})
@@ -759,6 +790,7 @@ if (BUILD_TESTING)
         src/openvpn/base64.c
         src/openvpn/crypto_epoch.c
         src/openvpn/crypto_mbedtls.c
+        src/openvpn/crypto_mbedtls_legacy.c
         src/openvpn/crypto_openssl.c
         src/openvpn/crypto.c
         src/openvpn/otime.c
@@ -770,7 +802,9 @@ if (BUILD_TESTING)
         )
 
     target_sources(test_crypto PRIVATE
+        tests/unit_tests/openvpn/siphash_openssl.c
         src/openvpn/crypto_mbedtls.c
+        src/openvpn/crypto_mbedtls_legacy.c
         src/openvpn/crypto_openssl.c
         src/openvpn/crypto_epoch.c
         src/openvpn/crypto.c
@@ -778,6 +812,7 @@ if (BUILD_TESTING)
         src/openvpn/packet_id.c
         src/openvpn/mtu.c
         src/openvpn/mss.c
+        src/openvpn/siphash_reference.c
         )
 
     target_sources(test_ssl PRIVATE
@@ -788,6 +823,7 @@ if (BUILD_TESTING)
             src/openvpn/base64.c
             src/openvpn/crypto_epoch.c
             src/openvpn/crypto_mbedtls.c
+            src/openvpn/crypto_mbedtls_legacy.c
             src/openvpn/crypto_openssl.c
             src/openvpn/crypto.c
             src/openvpn/cryptoapi.c
@@ -809,20 +845,27 @@ if (BUILD_TESTING)
 
     target_sources(test_mbuf PRIVATE
         tests/unit_tests/openvpn/mock_get_random.c
-        src/openvpn/buffer.c
         src/openvpn/mbuf.c
         )
 
     target_sources(test_misc PRIVATE
         tests/unit_tests/openvpn/mock_get_random.c
+        tests/unit_tests/openvpn/test_schedule.c
         src/openvpn/options_util.c
+        src/openvpn/otime.c
         src/openvpn/ssl_util.c
         src/openvpn/list.c
-        )
+        src/openvpn/session_id.c
+        src/openvpn/schedule.c
+        src/openvpn/siphash.h
+        src/openvpn/siphash.c
+        src/openvpn/siphash_reference.c
+    )
 
     target_sources(test_ncp PRIVATE
         src/openvpn/crypto_epoch.c
         src/openvpn/crypto_mbedtls.c
+        src/openvpn/crypto_mbedtls_legacy.c
         src/openvpn/crypto_openssl.c
         src/openvpn/crypto.c
         src/openvpn/otime.c
@@ -845,12 +888,20 @@ if (BUILD_TESTING)
         src/openvpn/session_id.c
         )
 
+    target_sources(test_oob PRIVATE
+        tests/unit_tests/openvpn/mock_get_random.c
+        src/openvpn/control_msg.c
+        src/openvpn/oob.c
+        src/openvpn/session_id.c
+        )
+
     target_sources(test_pkt PRIVATE
         tests/unit_tests/openvpn/mock_win32_execve.c
         src/openvpn/argv.c
         src/openvpn/base64.c
         src/openvpn/crypto_epoch.c
         src/openvpn/crypto_mbedtls.c
+        src/openvpn/crypto_mbedtls_legacy.c
         src/openvpn/crypto_openssl.c
         src/openvpn/crypto.c
         src/openvpn/env_set.c
@@ -858,6 +909,7 @@ if (BUILD_TESTING)
         src/openvpn/packet_id.c
         src/openvpn/reliable.c
         src/openvpn/run_command.c
+        src/openvpn/siphash_reference.c
         src/openvpn/session_id.c
         src/openvpn/ssl_pkt.c
         src/openvpn/tls_crypt.c
@@ -892,10 +944,12 @@ if (BUILD_TESTING)
     target_sources(test_push_update_msg PRIVATE
         tests/unit_tests/openvpn/mock_msg.c
         tests/unit_tests/openvpn/mock_get_random.c
+        tests/unit_tests/openvpn/mock_push_dependencies.c
         src/openvpn/options_util.c
         src/openvpn/otime.c
         src/openvpn/list.c
-        )
+        src/openvpn/ssl_util.c
+    )
 
     target_sources(test_argv PRIVATE
         tests/unit_tests/openvpn/mock_get_random.c
@@ -925,6 +979,7 @@ if (BUILD_TESTING)
             src/openvpn/networking_sitnl.c
             src/openvpn/crypto_epoch.c
             src/openvpn/crypto_mbedtls.c
+            src/openvpn/crypto_mbedtls_legacy.c
             src/openvpn/crypto_openssl.c
             src/openvpn/crypto.c
             src/openvpn/crypto_epoch.c
@@ -946,6 +1001,7 @@ if (BUILD_TESTING)
             src/openvpn/base64.c
             src/openvpn/crypto_epoch.c
             src/openvpn/crypto_mbedtls.c
+            src/openvpn/crypto_mbedtls_legacy.c
             src/openvpn/crypto_openssl.c
             src/openvpn/crypto.c
             src/openvpn/env_set.c

@@ -1212,14 +1212,14 @@ test_crypto(struct crypto_options *co, struct frame *frame)
 
     /* init implicit IV */
     {
-        cipher_ctx_t *cipher = co->key_ctx_bi.encrypt.cipher;
+        const cipher_ctx_t *cipher = co->key_ctx_bi.encrypt.cipher;
         if (cipher_ctx_mode_aead(cipher))
         {
             ASSERT(cipher_ctx_iv_length(cipher) <= OPENVPN_MAX_IV_LENGTH);
             ASSERT(cipher_ctx_iv_length(cipher) >= OPENVPN_AEAD_MIN_IV_LEN);
 
             /* Generate dummy implicit IV */
-            ASSERT(rand_bytes(co->key_ctx_bi.encrypt.implicit_iv, OPENVPN_MAX_IV_LENGTH));
+            prng_bytes(co->key_ctx_bi.encrypt.implicit_iv, OPENVPN_MAX_IV_LENGTH);
 
             memcpy(co->key_ctx_bi.decrypt.implicit_iv, co->key_ctx_bi.encrypt.implicit_iv,
                    OPENVPN_MAX_IV_LENGTH);
@@ -1239,7 +1239,7 @@ test_crypto(struct crypto_options *co, struct frame *frame)
         ASSERT(buf_init(&src, 0));
         ASSERT(i <= src.capacity);
         src.len = i;
-        ASSERT(rand_bytes(BPTR(&src), BLEN(&src)));
+        prng_bytes(BPTR(&src), BLEN(&src));
 
         /* copy source to input buf */
         buf = work;
@@ -1473,9 +1473,9 @@ read_key_file(struct key2 *key2, const char *file, const unsigned int flags)
                     hex_byte[hb_index++] = c;
                     if (hb_index == 2)
                     {
-                        uint8_t u;
-                        ASSERT(sscanf((const char *)hex_byte, "%" SCNx8, &u) == 1);
-                        *out++ = u;
+                        unsigned int u;
+                        ASSERT(sscanf((const char *)hex_byte, "%2x", &u) == 1);
+                        *out++ = (uint8_t)u;
                         hb_index = 0;
                         if (++count == keylen)
                         {
@@ -1731,11 +1731,12 @@ prng_bytes(uint8_t *output, int len)
     ASSERT(rand_bytes(output, len));
 }
 
-/* an analogue to the random() function, but use prng_bytes */
-long int
+/* an analogue to the random() function, but use prng_bytes and
+ * also int64_t instead of long to avoid LLP64 vs LP64 */
+int64_t
 get_random(void)
 {
-    long int l;
+    int64_t l;
     prng_bytes((unsigned char *)&l, sizeof(l));
     if (l < 0)
     {
@@ -1921,7 +1922,7 @@ check_tls_prf_working(void)
     const char *seed = "tls1-prf-test";
     const char *secret = "tls1-prf-test-secret";
     uint8_t out[8];
-    uint8_t expected_out[] = { 'q', 'D', 0xfe, '%', '@', 's', 'u', 0x95 };
+    const uint8_t expected_out[] = { 'q', 'D', 0xfe, '%', '@', 's', 'u', 0x95 };
 
     int ret = ssl_tls1_PRF((uint8_t *)seed, strlen(seed), (uint8_t *)secret,
                            strlen(secret), out, sizeof(out));
