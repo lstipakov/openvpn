@@ -627,12 +627,13 @@ bind_local(struct link_socket *sock)
     {
         if (sock->socks_proxy && sock->info.proto == PROTO_UDP)
         {
-            socket_bind(sock->ctrl_sd, sock->info.lsa->bind_local, sock->info.af, "SOCKS", false);
+            socket_bind(sock->ctrl_sd, sock->info.lsa->bind_local, sock->info.af, "SOCKS", false,
+                        M_FATAL);
         }
         else
         {
             socket_bind(sock->sd, sock->info.lsa->bind_local, sock->info.af, "TCP/UDP",
-                        sock->info.bind_ipv6_only);
+                        sock->info.bind_ipv6_only, M_FATAL);
         }
     }
 }
@@ -678,9 +679,11 @@ create_socket_udp_configured(sa_family_t af, unsigned int sockflags, const struc
     }
 
     socket_apply_options(sd, sbs, mark, bind_dev);
-    if (bind_addr)
+    if (bind_addr
+        && !socket_bind(sd, bind_addr, af, "TCP/UDP", bind_ipv6_only, optional ? D_LOW : M_FATAL))
     {
-        socket_bind(sd, bind_addr, af, "TCP/UDP", bind_ipv6_only);
+        openvpn_close_socket(sd);
+        return SOCKET_UNDEFINED;
     }
     return sd;
 }
@@ -914,9 +917,9 @@ socket_listen_accept(socket_descriptor_t sd, struct link_socket_actual *act,
     return new_sd;
 }
 
-void
+bool
 socket_bind(socket_descriptor_t sd, struct addrinfo *local, int ai_family, const char *prefix,
-            bool ipv6only)
+            bool ipv6only, msglvl_t msglevel)
 {
     struct gc_arena gc = gc_new();
 
@@ -940,8 +943,10 @@ socket_bind(socket_descriptor_t sd, struct addrinfo *local, int ai_family, const
     }
     if (!cur)
     {
-        msg(M_FATAL, "%s: Socket bind failed: Addr to bind has no %s record", prefix,
+        msg(msglevel, "%s: Socket bind failed: Addr to bind has no %s record", prefix,
             addr_family_name(ai_family));
+        gc_free(&gc);
+        return false;
     }
 
     if (ai_family == AF_INET6)
@@ -956,10 +961,13 @@ socket_bind(socket_descriptor_t sd, struct addrinfo *local, int ai_family, const
     }
     if (openvpn_bind(sd, cur->ai_addr, cur->ai_addrlen))
     {
-        msg(M_FATAL | M_ERRNO, "%s: Socket bind failed on local address %s", prefix,
+        msg(msglevel | M_ERRNO, "%s: Socket bind failed on local address %s", prefix,
             print_sockaddr_ex(local->ai_addr, ":", PS_SHOW_PORT, &gc));
+        gc_free(&gc);
+        return false;
     }
     gc_free(&gc);
+    return true;
 }
 
 int
