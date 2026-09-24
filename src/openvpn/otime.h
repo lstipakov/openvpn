@@ -93,17 +93,6 @@ update_time(void)
 #endif
 }
 
-static inline time_t
-openvpn_time(time_t *t)
-{
-    update_time();
-    if (t)
-    {
-        *t = now;
-    }
-    return now;
-}
-
 static inline void
 tv_clear(struct timeval *tv)
 {
@@ -148,80 +137,6 @@ tv_add(struct timeval *dest, const struct timeval *src)
         dest->tv_usec -= 1000000;
         dest->tv_sec += 1;
     }
-}
-
-static inline bool
-tv_lt(const struct timeval *t1, const struct timeval *t2)
-{
-    if (t1->tv_sec < t2->tv_sec)
-    {
-        return true;
-    }
-    else if (t1->tv_sec > t2->tv_sec)
-    {
-        return false;
-    }
-    else
-    {
-        return t1->tv_usec < t2->tv_usec;
-    }
-}
-
-static inline bool
-tv_le(const struct timeval *t1, const struct timeval *t2)
-{
-    if (t1->tv_sec < t2->tv_sec)
-    {
-        return true;
-    }
-    else if (t1->tv_sec > t2->tv_sec)
-    {
-        return false;
-    }
-    else
-    {
-        return t1->tv_usec <= t2->tv_usec;
-    }
-}
-
-static inline bool
-tv_ge(const struct timeval *t1, const struct timeval *t2)
-{
-    if (t1->tv_sec > t2->tv_sec)
-    {
-        return true;
-    }
-    else if (t1->tv_sec < t2->tv_sec)
-    {
-        return false;
-    }
-    else
-    {
-        return t1->tv_usec >= t2->tv_usec;
-    }
-}
-
-static inline bool
-tv_gt(const struct timeval *t1, const struct timeval *t2)
-{
-    if (t1->tv_sec > t2->tv_sec)
-    {
-        return true;
-    }
-    else if (t1->tv_sec < t2->tv_sec)
-    {
-        return false;
-    }
-    else
-    {
-        return t1->tv_usec > t2->tv_usec;
-    }
-}
-
-static inline bool
-tv_eq(const struct timeval *t1, const struct timeval *t2)
-{
-    return t1->tv_sec == t2->tv_sec && t1->tv_usec == t2->tv_usec;
 }
 
 static inline void

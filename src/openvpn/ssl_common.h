@@ -227,6 +227,8 @@ struct key_state
     time_t initial;                        /* when we created this session */
     time_t established;                    /* when our state went S_ACTIVE */
     time_t must_negotiate;                 /* key negotiation times out if not finished before this time */
+    bool oob_probe_start;                  /* probe-started handshake: must_negotiate is a short
+                                            * first-response deadline, not the full window */
     time_t must_die;                       /* this object is destroyed at this time */
     time_t peer_last_packet;               /* Last time we received a packet in this control session */
 
@@ -285,7 +287,6 @@ struct tls_wrap_ctx
     struct key_ctx tls_crypt_v2_server_key; /**< Decrypts client keys */
     const struct buffer *tls_crypt_v2_wkc;  /**< Wrapped client key,
                                              *   sent to server */
-    struct buffer tls_crypt_v2_metadata;    /**< Received from client */
     bool cleanup_key_ctx;                   /**< opt.key_ctx_bi is owned by
                                              *   this context */
     /** original key data to be xored in to the key for dynamic tls-crypt.
@@ -697,8 +698,10 @@ struct tls_multi
 #define AUTH_TOKEN_VALID_EMPTYUSER (1 << 2)
 
     /* For P_DATA_V2 */
-    uint32_t peer_id;
+    uint32_t rx_peer_id;
+    uint32_t tx_peer_id;
     bool use_peer_id;
+    bool use_asymmetric_peer_id;
 
     char *remote_ciphername; /**< cipher specified in peer's config file */
     bool remote_usescomp;    /**< remote announced comp-lzo in OCC string */

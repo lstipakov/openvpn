@@ -8,14 +8,18 @@
 # define these - if empty, no tests will run
 #
 top_srcdir="${top_srcdir:-..}"
+
+# PKI args
 CA_CERT="${top_srcdir}/sample/sample-keys/ca.crt"
 CLIENT_KEY="${top_srcdir}/sample/sample-keys/client.key"
 CLIENT_CERT="${top_srcdir}/sample/sample-keys/client.crt"
+
+# Customize ping tests
 #FPING_EXTRA_ARGS="-t 1000"
 
 # Load EXPECT_IFCONFIG* parameters from cache
-if [ -r "${top_builddir}/t_client_ips.rc" ]; then
-    . "${top_builddir}/t_client_ips.rc"
+if [ -r "${t_client_ips_rc}" ]; then
+    . "${t_client_ips_rc}"
 else
     echo "NOTICE: missing t_client_ips.rc will be auto-generated"
 fi
@@ -26,6 +30,21 @@ fi
 REMOTE=mytestserver
 #
 # tests to run (list suffixes for config stanzas below)
+#
+# The general idea is to use one number per server, so
+# e.g. use 1 for all tests talking to a UDP server, use
+# 2 for tests talking to a TCP server, and 3 for tests
+# talking to a P2P server.
+#
+# The indivdiual tests should then be indexed by using
+# letters.
+#
+# If you set TEST_RUN_GROUP=<number> then t_client.sh
+# will only run tests starting with that number. So
+# e.g. setting TEST_RUN_GROUP=1 will run 1 and 1a, but
+# not 2. This can be used to excercise only a specific
+# server, or to run tests against separate servers in
+# parallel.
 #
 TEST_RUN_LIST="1 2 2n"
 
@@ -48,8 +67,8 @@ OPENVPN_BASE_P2P="..."
 
 #
 #
-# now define the individual tests - all variables suffixed with _1, _2 etc
-# will be used in test run "1", "2", etc.
+# now define the individual tests - all variables suffixed with _1, _2, _2n etc
+# will be used in test run "1", "2", "2n" etc.
 #
 # if something is not defined here, the corresponding test is not run
 #
@@ -61,9 +80,17 @@ OPENVPN_BASE_P2P="..."
 # EXPECT_IFCONFIG6_x = "this IPv6 address needs to show up in ifconfig"
 # PING4_HOSTS_x      = "these hosts musts ping when openvpn is up (IPv4 fping)"
 # PING6_HOSTS_x      = "these hosts musts ping when openvpn is up (IPv6 fping6)"
+# EXPECT_FAIL_x      = "instead of waiting for connection wait for this error message"
+#
+# Note that the EXPECT_IFCONFIG{4,6} options are not generally required, the
+# tests will remember the ip address they got on the first run in t_client_ips.rc
+# and will expect to get the same address again. But it can be useful to hard-code
+# the IP when the server is expected to send a very specific address, e.g. when
+# using ccd on the server-side or in a P2P scenario.
 #
 # hook test options:
 #
+# FPING_ARGS_x      = "arguments to append to the fping command line"
 # CHECK_SKIP_x      = "commands to execute before openvpn, skip test on failure"
 # PREPARE_x         = "commands to execute before openvpn"
 # POSTINIT_CMD_x    = "commands to execute after openvpn but before ping"

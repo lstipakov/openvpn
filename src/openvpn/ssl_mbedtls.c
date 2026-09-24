@@ -88,7 +88,7 @@ tls_free_lib(void)
 }
 
 void
-tls_ctx_server_new(struct tls_root_ctx *ctx)
+tls_ctx_new(struct tls_root_ctx *ctx)
 {
     ASSERT(NULL != ctx);
     CLEAR(*ctx);
@@ -99,24 +99,9 @@ tls_ctx_server_new(struct tls_root_ctx *ctx)
 
     ALLOC_OBJ_CLEAR(ctx->ca_chain, mbedtls_x509_crt);
 
-    ctx->endpoint = MBEDTLS_SSL_IS_SERVER;
     ctx->initialised = true;
 }
 
-void
-tls_ctx_client_new(struct tls_root_ctx *ctx)
-{
-    ASSERT(NULL != ctx);
-    CLEAR(*ctx);
-
-#if MBEDTLS_VERSION_NUMBER < 0x04000000
-    ALLOC_OBJ_CLEAR(ctx->dhm_ctx, mbedtls_dhm_context);
-#endif
-    ALLOC_OBJ_CLEAR(ctx->ca_chain, mbedtls_x509_crt);
-
-    ctx->endpoint = MBEDTLS_SSL_IS_CLIENT;
-    ctx->initialised = true;
-}
 
 void
 tls_ctx_free(struct tls_root_ctx *ctx)
@@ -301,7 +286,7 @@ tls_ctx_restrict_ciphers_tls13(struct tls_root_ctx *ctx, const char *ciphers)
 void
 tls_ctx_restrict_ciphers(struct tls_root_ctx *ctx, const char *ciphers)
 {
-    char *tmp_ciphers, *tmp_ciphers_orig, *token;
+    char *tmp_ciphers, *tmp_ciphers_orig;
 
     if (NULL == ciphers)
     {
@@ -318,9 +303,10 @@ tls_ctx_restrict_ciphers(struct tls_root_ctx *ctx, const char *ciphers)
 
     /* Parse allowed ciphers, getting IDs */
     int i = 0;
+    char *lasts = NULL;
     tmp_ciphers_orig = tmp_ciphers = string_alloc(ciphers, NULL);
 
-    token = strtok(tmp_ciphers, ":");
+    const char *token = strtok_r(tmp_ciphers, ":", &lasts);
     while (token)
     {
         ctx->allowed_ciphers[i] = mbedtls_ssl_get_ciphersuite_id(tls_translate_cipher_name(token));
@@ -328,7 +314,7 @@ tls_ctx_restrict_ciphers(struct tls_root_ctx *ctx, const char *ciphers)
         {
             i++;
         }
-        token = strtok(NULL, ":");
+        token = strtok_r(NULL, ":", &lasts);
     }
     free(tmp_ciphers_orig);
 }
@@ -744,7 +730,7 @@ done:
 static inline size_t
 external_key_len(void *vctx)
 {
-    struct external_context *const ctx = vctx;
+    const struct external_context *const ctx = vctx;
 
     return ctx->signature_length;
 }
@@ -1140,7 +1126,8 @@ key_state_ssl_init(struct key_state_ssl *ks_ssl, const struct tls_root_ctx *ssl_
     /* Initialise SSL config */
     ALLOC_OBJ_CLEAR(ks_ssl->ssl_config, mbedtls_ssl_config);
     mbedtls_ssl_config_init(ks_ssl->ssl_config);
-    mbedtls_ssl_config_defaults(ks_ssl->ssl_config, ssl_ctx->endpoint, MBEDTLS_SSL_TRANSPORT_STREAM,
+    int endpoint = is_server ? MBEDTLS_SSL_IS_SERVER : MBEDTLS_SSL_IS_CLIENT;
+    mbedtls_ssl_config_defaults(ks_ssl->ssl_config, endpoint, MBEDTLS_SSL_TRANSPORT_STREAM,
                                 MBEDTLS_SSL_PRESET_DEFAULT);
 #ifdef MBEDTLS_DEBUG_C
     /* We only want to have mbed TLS generate debug level logging when we would
@@ -1529,7 +1516,7 @@ show_available_tls_ciphers_list(const char *cipher_list, const char *tls_cert_pr
     struct tls_root_ctx tls_ctx;
     const int *ciphers = mbedtls_ssl_list_ciphersuites();
 
-    tls_ctx_server_new(&tls_ctx);
+    tls_ctx_new(&tls_ctx);
     tls_ctx_set_cert_profile(&tls_ctx, tls_cert_profile);
     tls_ctx_restrict_ciphers(&tls_ctx, cipher_list);
 

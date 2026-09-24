@@ -178,6 +178,7 @@ struct multi_context
     struct ifconfig_pool *ifconfig_pool;
     struct frequency_limit *new_connection_limiter;
     struct initial_packet_rate_limit *initial_rate_limiter;
+    struct initial_packet_rate_limit *stale_probe_limiter; /**< stale SERVER_PROBE answers */
     struct mroute_helper *route_helper;
     struct multi_reap *reaper;
     struct mroute_addr local;
@@ -233,8 +234,9 @@ struct multi_route
     struct mroute_addr addr;
     struct multi_instance *instance;
 
-#define MULTI_ROUTE_CACHE   (1 << 0)
-#define MULTI_ROUTE_AGEABLE (1 << 1)
+#define MULTI_ROUTE_CACHE     (1 << 0)
+#define MULTI_ROUTE_AGEABLE   (1 << 1)
+#define MULTI_ROUTE_PERMANENT (1 << 2) /* config-derived (iroute / pushed ifconfig); never stale-aged */
     unsigned int flags;
 
     unsigned int cache_generation;

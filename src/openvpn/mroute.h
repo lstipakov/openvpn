@@ -144,7 +144,7 @@ bool mroute_extract_openvpn_sockaddr(struct mroute_addr *addr,
 
 bool mroute_learnable_address(const struct mroute_addr *addr, struct gc_arena *gc);
 
-uint32_t mroute_addr_hash_function(const void *key, uint32_t iv);
+uint64_t mroute_addr_hash_function(const void *key, const uint8_t hash_key[HASH_KEY_LEN]);
 
 bool mroute_addr_compare_function(const void *key1, const void *key2);
 
@@ -247,26 +247,6 @@ mroute_extract_in_addr_t(struct mroute_addr *dest, const in_addr_t src)
     dest->netbits = 0;
     dest->len = 4;
     dest->v4.addr = htonl(src);
-}
-
-static inline in_addr_t
-in_addr_t_from_mroute_addr(const struct mroute_addr *addr)
-{
-    if ((addr->type & MR_ADDR_MASK) == MR_ADDR_IPV4 && addr->netbits == 0 && addr->len == 4)
-    {
-        return ntohl(addr->v4.addr);
-    }
-    else
-    {
-        return 0;
-    }
-}
-
-static inline void
-mroute_addr_reset(struct mroute_addr *ma)
-{
-    ma->len = 0;
-    ma->type = MR_ADDR_NONE;
 }
 
 #endif /* MROUTE_H */

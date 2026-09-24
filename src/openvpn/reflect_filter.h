@@ -44,6 +44,9 @@ struct initial_packet_rate_limit
     /* we want to warn once per period that packets are being started to
      * be dropped */
     bool warning_displayed;
+
+    /* drop silently: no per-period warning or summary in the log */
+    bool quiet;
 };
 
 

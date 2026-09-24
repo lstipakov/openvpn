@@ -504,7 +504,7 @@ int tun_write_win32(struct tuntap *tt, struct buffer *buf);
 static inline bool
 is_ip_packet_valid(const struct buffer *buf)
 {
-    const struct openvpn_iphdr *ih = (const struct openvpn_iphdr *)BPTR(buf);
+    const struct openvpn_iphdr *ih = (const struct openvpn_iphdr *)CBPTR(buf);
 
     if (OPENVPN_IPH_GET_VER(ih->version_len) == 4)
     {
@@ -535,7 +535,7 @@ tuntap_is_dco_win(struct tuntap *tt)
 }
 
 static inline bool
-tuntap_is_dco_win_timeout(struct tuntap *tt, int status)
+tuntap_is_dco_win_timeout(struct tuntap *tt, ssize_t status)
 {
     return tuntap_is_dco_win(tt) && (status < 0) && (openvpn_errno() == ERROR_NETNAME_DELETED);
 }
@@ -573,7 +573,7 @@ tuntap_is_dco_win(struct tuntap *tt)
 }
 
 static inline bool
-tuntap_is_dco_win_timeout(struct tuntap *tt, int status)
+tuntap_is_dco_win_timeout(struct tuntap *tt, ssize_t status)
 {
     return false;
 }

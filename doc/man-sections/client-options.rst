@@ -568,6 +568,17 @@ configuration.
   By default, ``--resolv-retry infinite`` is enabled. You can disable by
   setting n=0.
 
+--preresolve
+  Resolve configured ``--remote``, ``--local``, ``--http-proxy``, and
+  ``--socks-proxy`` hostnames at startup before opening the connection.
+
+  The resolved addresses are cached and reused for reconnects, so OpenVPN
+  will not re-resolve these hostnames after the initial connection attempt.
+  This can help configurations where DNS is unavailable while the VPN is
+  down, but can be counter-productive for dynamic DNS names or when roaming
+  between networks where address family availability changes, such as
+  DNS64/NAT64.
+
 --single-session
   After initially connecting to a remote peer, disallow any new
   connections. Using this option means that a remote peer cannot connect,
@@ -583,6 +594,86 @@ configuration.
   When connecting to a remote server do not wait for more than ``n``
   seconds for a response before trying the next server. The default value
   is :code:`120`. This timeout includes proxy and TCP connect timeouts.
+
+--server-probe args
+  Before the first connection attempt, probe all configured UDP remotes
+  out-of-band and reorder the connection list based on the replies.
+
+  Valid syntaxes::
+
+     server-probe
+     server-probe max-latency-diff
+
+  A small probe message is sent to every resolved address of every UDP
+  remote, and each answering server replies with its advertised priority
+  and weight. Remotes are then reordered following DNS SRV (RFC 2782)
+  semantics: servers that answered are tried before those that did not,
+  grouped by priority (lowest first); within a priority group, servers
+  whose measured round-trip time is within ``max-latency-diff``
+  milliseconds of the fastest one are picked by weighted-random
+  selection, the others follow in round-trip-time order. When
+  ``max-latency-diff`` is not given, the margin advertised by the fastest
+  server of a priority group applies to that group; the margins of the
+  slower servers play no part. A server advertising :code:`0` thus says
+  that, when it is the fastest, only servers tying it count as equal. A
+  value of :code:`1000` or more makes every answering server of a
+  priority group a candidate, since replies only arrive within the
+  one-second probe window; the group is then ordered by weight alone.
+
+  The addresses of one remote are expected to be the same service and to
+  advertise the same values; the first of them to answer speaks for the
+  remote.
+
+  The probe carries the same control-channel wrapping as a normal
+  connection (``--tls-auth``, ``--tls-crypt`` or ``--tls-crypt-v2``,
+  when configured).
+
+  Only UDP remotes are probed, and only when there are at least two
+  remotes; remotes reached through a SOCKS proxy are not probed. The
+  probes are sent from one socket per address family, set up like the
+  connection socket of the first remote that can be probed; all probed
+  remotes must therefore share its local bind settings (``--local``,
+  ``--lport``, ``--bind``) and control-channel key, otherwise probing is
+  skipped and the configured order is used.
+
+  Remotes that answered are tried first, in the order described above;
+  all other remotes, including TCP ones, follow in their configured
+  order. Probing runs once per process, before the first connection
+  attempt; a reconnect or a SIGUSR1 restart does not probe again.
+
+  Probing delays the first connection attempt by up to one second, plus
+  the time needed to resolve each remote. A server answers only a few
+  probes per period whose timestamp is more than its ``--hand-window``
+  away from its own clock, so a client whose clock is badly wrong may get
+  no replies and then keeps the configured order. Ordering by probe
+  replaces any order that ``--remote-random`` produced.
+
+  When the winning server supports it, the probe exchange also starts the
+  handshake: its reply stands in for the server's reset packet, so the
+  client sends no reset of its own and the connection is established one
+  round trip sooner. This has consequences worth knowing:
+
+  - the connection reuses the probe's socket, and therefore its source
+    port, which matters where firewall or NAT rules pin a port;
+  - the connection first tries the address that answered, rather than
+    the remote's first resolved address;
+  - the server honours its reply only for a limited time (see
+    ``--server-probe-reply``), so an unusually slow start-up, such as a
+    private key passphrase or token prompt, can outlast it; the client
+    then falls back to a normal handshake;
+  - a handshake started this way is given only a few seconds to draw a
+    response, rather than ``--hand-window``. If none arrives the client
+    logs a key negotiation timeout, restarts the attempt and moves on to
+    the next address or remote, so the address that answered the probe is
+    not retried during this cycle. The server answered a probe moments
+    earlier, so silence means it did not accept the reply as a reset,
+    which happens when a load balancer sends the probe and the handshake
+    to different instances, when NAT changes the source port, or when the
+    server rotated its session id key.
+
+  The handshake shortcut is not used on Windows while DCO is active.
+
+  See ``--server-probe-reply`` for the server side.
 
 --static-challenge args
   Enable static challenge/response protocol

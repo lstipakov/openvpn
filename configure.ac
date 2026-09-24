@@ -245,10 +245,10 @@ AC_ARG_WITH(
 
 AC_ARG_WITH(
 	[mem-check],
-	[AS_HELP_STRING([--with-mem-check=TYPE], [build with debug memory checking, TYPE=no|dmalloc|valgrind|ssl @<:@default=no@:>@])],
+	[AS_HELP_STRING([--with-mem-check=TYPE], [build with debug memory checking, TYPE=no|valgrind|ssl @<:@default=no@:>@])],
 	[
 		case "${withval}" in
-			dmalloc|valgrind|ssl|no) ;;
+			valgrind|ssl|no) ;;
 			*) AC_MSG_ERROR([bad value ${withval} for --mem-check]) ;;
 		esac
 	],
@@ -568,7 +568,7 @@ AC_CHECK_FUNCS([ \
 	setgroups flock gettimeofday \
 	setsid chdir \
 	chsize ftruncate execve getpeereid basename dirname \
-	epoll_create strsep \
+	epoll_create strsep strtok_r \
 ])
 
 AC_CHECK_LIB(
@@ -650,25 +650,6 @@ case "${with_mem_check}" in
 				)
 			],
 			[AC_MSG_ERROR([valgrind headers not found.])]
-		)
-		;;
-	dmalloc)
-		AC_CHECK_HEADERS(
-			[dmalloc.h],
-			[AC_CHECK_LIB(
-				[dmalloc],
-				[malloc],
-				[
-					LIBS="${LIBS} -ldmalloc"
-					AC_DEFINE(
-						[DMALLOC],
-						[1],
-						[Use dmalloc memory debugging library]
-					)
-				],
-				[AC_MSG_ERROR([dmalloc library not found.])]
-			)],
-			[AC_MSG_ERROR([dmalloc headers not found.])]
 		)
 		;;
 	ssl)
@@ -776,7 +757,7 @@ if test "${with_crypto_library}" = "openssl"; then
 		# if the user did not explicitly specify flags, try to autodetect
 		PKG_CHECK_MODULES(
 			[OPENSSL],
-			[openssl >= 1.1.0],
+			[openssl >= 1.1.1],
 			[have_openssl="yes"],
 			[AC_MSG_WARN([OpenSSL not found by pkg-config ${pkg_config_found}])] # If this fails, we will do another test next
 		)
@@ -799,7 +780,7 @@ if test "${with_crypto_library}" = "openssl"; then
 				]],
 				[[
 /*	     Version encoding: MNNFFPPS - see opensslv.h for details */
-#if OPENSSL_VERSION_NUMBER < 0x10100000L
+#if OPENSSL_VERSION_NUMBER < 0x10101000L
 #error OpenSSL too old
 #endif
 				]]

@@ -480,9 +480,9 @@ tls_wrap_free(struct tls_wrap_ctx *tls_wrap)
     if (tls_wrap->cleanup_key_ctx)
     {
         free_key_ctx_bi(&tls_wrap->opt.key_ctx_bi);
+        tls_wrap->cleanup_key_ctx = false;
     }
 
-    free_buf(&tls_wrap->tls_crypt_v2_metadata);
     free_buf(&tls_wrap->work);
     secure_memzero(&tls_wrap->original_wrap_keydata, sizeof(tls_wrap->original_wrap_keydata));
 }
@@ -575,5 +575,22 @@ void load_xkey_provider(void);
  * HMAC based stateless server state */
 bool session_skip_to_pre_start(struct tls_session *session, struct tls_pre_decrypt_state *state,
                                struct link_socket_actual *from);
+
+/**
+ * Client counterpart of session_skip_to_pre_start(): start the handshake from a
+ * server session id (SYN-cookie) learned earlier from an OOB server probe
+ * reply, which already served as the server's HARD_RESET, so we send none.
+ *
+ * @param session     the (client) TLS session to fast-forward
+ * @param client_sid  session id used for the probe (the cookie is an HMAC over it)
+ * @param server_sid  the server's cookie, echoed back to complete the handshake
+ * @param remote      the probed (pinned) server address to connect to
+ * @param resend_wkc  true to complete with P_CONTROL_WKC_V1 (tls-crypt-v2)
+ * @return true if the session was fast-forwarded, false on failure
+ */
+bool session_skip_to_pre_start_client(struct tls_session *session,
+                                      const struct session_id *client_sid,
+                                      const struct session_id *server_sid,
+                                      const struct openvpn_sockaddr *remote, bool resend_wkc);
 
 #endif /* ifndef OPENVPN_SSL_H */

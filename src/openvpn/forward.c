@@ -271,7 +271,7 @@ parse_incoming_control_channel_command(struct context *c, struct buffer *buf)
     }
     else
     {
-        msg(D_PUSH_ERRORS, "WARNING: Received unknown control message: %s", BSTR(buf));
+        msg(D_PUSH_ERRORS, "WARNING: Received unknown control message: %s", CBSTR(buf));
     }
 }
 
@@ -929,14 +929,12 @@ read_incoming_link(struct context *c, struct link_socket *sock)
      * Set up for recvfrom call to read datagram
      * sent to our TCP/UDP port.
      */
-    int status;
-
     /*ASSERT (!c->c2.to_tun.len);*/
 
     c->c2.buf = c->c2.buffers->read_link_buf;
     ASSERT(buf_init(&c->c2.buf, c->c2.frame.buf.headroom));
 
-    status = link_socket_read(sock, &c->c2.buf, &c->c2.from);
+    ssize_t status = link_socket_read(sock, &c->c2.buf, &c->c2.from);
 
     if (socket_connection_reset(sock, status))
     {
@@ -955,14 +953,14 @@ read_incoming_link(struct context *c, struct link_socket *sock)
             if (event_timeout_defined(&c->c2.explicit_exit_notification_interval))
             {
                 msg(D_STREAM_ERRORS,
-                    "Connection reset during exit notification period, ignoring [%d]", status);
+                    "Connection reset during exit notification period, ignoring [%zd]", status);
                 management_sleep(1);
             }
             else
             {
                 register_signal(c->sig, SIGUSR1,
                                 "connection-reset"); /* SOFT-SIGUSR1 -- TCP connection reset */
-                msg(D_STREAM_ERRORS, "Connection reset, restarting [%d]", status);
+                msg(D_STREAM_ERRORS, "Connection reset, restarting [%zd]", status);
             }
         }
         return;
@@ -1026,7 +1024,7 @@ process_incoming_link_part1(struct context *c, struct link_socket_info *lsi, boo
      * Good, non-zero length packet received.
      * Commence multi-stage processing of packet,
      * such as authenticate, decrypt, decompress.
-     * If any stage fails, it sets buf.len to 0 or -1,
+     * If any stage fails, it sets buf.len to 0,
      * telling downstream stages to ignore the packet.
      */
     if (c->c2.buf.len > 0)
@@ -1215,7 +1213,7 @@ extract_dco_float_peer_addr(const sa_family_t socket_family, struct openvpn_sock
 {
     if (float_sa->sa_family == AF_INET)
     {
-        struct sockaddr_in *float4 = (struct sockaddr_in *)float_sa;
+        const struct sockaddr_in *float4 = (struct sockaddr_in *)float_sa;
         /* DCO treats IPv4-mapped IPv6 addresses as pure IPv4. However, on a
          * dual-stack socket, we need to preserve the mapping otherwise openvpn
          * will not be able to find the peer by its transport address.
@@ -1238,7 +1236,7 @@ extract_dco_float_peer_addr(const sa_family_t socket_family, struct openvpn_sock
     }
     else
     {
-        struct sockaddr_in6 *float6 = (struct sockaddr_in6 *)float_sa;
+        const struct sockaddr_in6 *float6 = (struct sockaddr_in6 *)float_sa;
         memcpy(&out_osaddr->addr.in6, float6, sizeof(struct sockaddr_in6));
     }
 }
@@ -1368,8 +1366,8 @@ drop_if_recursive_routing(struct context *c, struct buffer *buf)
         return;
     }
 
-    struct openvpn_sockaddr *link_addr = &c->c2.to_link_addr->dest;
-    struct link_socket_info *lsi = get_link_socket_info(c);
+    const struct openvpn_sockaddr *link_addr = &c->c2.to_link_addr->dest;
+    const struct link_socket_info *lsi = get_link_socket_info(c);
 
     int ip_hdr_offset = 0;
     int tun_ip_ver = get_tun_ip_ver(TUNNEL_TYPE(c->c1.tuntap), buf, &ip_hdr_offset);
@@ -1406,7 +1404,7 @@ drop_if_recursive_routing(struct context *c, struct buffer *buf)
         }
 
         /* drop packets with same dest addr and port as remote */
-        uint8_t *l4_hdr = (uint8_t *)pip + ip_hlen;
+        const uint8_t *l4_hdr = (uint8_t *)pip + ip_hlen;
 
         uint16_t link_port = ntohs(link_addr->addr.in4.sin_port);
 
@@ -1453,7 +1451,7 @@ drop_if_recursive_routing(struct context *c, struct buffer *buf)
         uint16_t link_port = ntohs(link_addr->addr.in6.sin6_port);
 
         /* drop packets with same dest addr and port as remote */
-        uint8_t *l4_hdr = (uint8_t *)pip6 + sizeof(struct openvpn_ipv6hdr);
+        const uint8_t *l4_hdr = (uint8_t *)pip6 + sizeof(struct openvpn_ipv6hdr);
         uint16_t src_port = ntohs(*(uint16_t *)l4_hdr);
         uint16_t dst_port = ntohs(*(uint16_t *)(l4_hdr + sizeof(uint16_t)));
         if ((OPENVPN_IN6_ARE_ADDR_EQUAL(&link_addr->addr.in6.sin6_addr, &pip6->daddr)) && (link_port == dst_port))
@@ -1648,7 +1646,7 @@ ipv6_send_icmp_unreachable(struct context *c, struct buffer *buf, bool client)
             return;
         }
 
-        const struct openvpn_ethhdr *orig_ethhdr = (struct openvpn_ethhdr *)BPTR(buf);
+        const struct openvpn_ethhdr *orig_ethhdr = (const struct openvpn_ethhdr *)CBPTR(buf);
 
         /* Copy frametype and reverse source/destination for the response */
         struct openvpn_ethhdr ethhdr;
@@ -1748,7 +1746,6 @@ void
 process_outgoing_link(struct context *c, struct link_socket *sock)
 {
     struct gc_arena gc = gc_new();
-    int error_code = 0;
 
     if (c->c2.to_link.len > 0 && c->c2.to_link.len <= c->c2.frame.buf.payload_size)
     {
@@ -1823,7 +1820,7 @@ process_outgoing_link(struct context *c, struct link_socket *sock)
         }
 
         /* Check return status */
-        error_code = openvpn_errno();
+        int error_code = openvpn_errno();
         check_status(size, "write", sock, NULL);
 
         if (size > 0)
@@ -2212,7 +2209,7 @@ io_wait(struct context *c, const unsigned int flags)
 
                     if (e->arg >= MULTI_N)
                     {
-                        struct event_arg *ev_arg = (struct event_arg *)e->arg;
+                        const struct event_arg *ev_arg = (struct event_arg *)e->arg;
                         if (ev_arg->type != EVENT_ARG_LINK_SOCKET)
                         {
                             c->c2.event_set_status = ES_ERROR;

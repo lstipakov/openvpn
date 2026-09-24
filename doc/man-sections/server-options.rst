@@ -87,7 +87,9 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   external-auth option unless the client could authenticate in another
   acceptable way (e.g. client certificate), otherwise returning success
   will lead to authentication bypass (as does returning success on a wrong
-  password from a script).
+  password from a script). In the case that Expired token is accepted
+  the token will keep the session id and start time from the original
+  (expired) token.
 
   **Note:** the username for ``--auth-gen-token`` can be overridden by
   ``--override-username``. In this case the client will be pushed also the
@@ -660,6 +662,45 @@ fast hardware. SSL/TLS authentication must be used in this mode.
   Pushing of the ``--tun-ipv6`` directive is done for older clients which
   require an explicit ``--tun-ipv6`` in their configuration.
 
+--server-probe-reply args
+  Set the values a server advertises in its replies to out-of-band
+  probes from clients using ``--server-probe``.
+
+  Valid syntaxes::
+
+     server-probe-reply max-latency-diff
+     server-probe-reply max-latency-diff weight
+     server-probe-reply max-latency-diff weight priority
+
+  ``max-latency-diff`` is the candidate-band margin in milliseconds that
+  *this* server announces. When it is the fastest server of its priority
+  group, a probing client treats every server within that margin of it as
+  equal and picks among them by ``weight``; the margin of a slower server
+  has no effect. The default is :code:`10`; :code:`0` means only servers
+  tying it exactly count as equal, and ``weight`` still distributes load
+  between those. A client that sets its own margin with ``--server-probe``
+  overrides every advertised value.
+
+  ``weight`` (default :code:`50`) and ``priority`` (default :code:`100`)
+  have DNS SRV (RFC 2782) semantics: clients try servers with a lower
+  priority value first (lower is better), and distribute load between
+  equally-good servers of the same priority proportionally to their
+  weights.
+
+  All values are in the range :code:`0` to :code:`65535`. A UDP server
+  answers probes by default, whether or not this option is given, and
+  the values above only change what it advertises. Replies are stateless
+  and rate-limited. A probe whose timestamp is more than ``--hand-window``
+  away from the server's clock is answered only within a small budget, a
+  twentieth of ``--connect-freq-initial``, so a client with a wrong clock
+  can still probe while a replayed probe is answered at most that often.
+
+  For a client that supports it, the reply also serves as this server's
+  reset packet, letting the client start its handshake from it and save a
+  round trip. The reply states how long it may be used this way, derived
+  from ``--hand-window``: lowering ``--hand-window`` shortens that window
+  as well.
+
 --stale-routes-check args
   Remove routes which haven't had activity for ``n`` seconds (i.e. the ageing
   time).  This check is run every ``t`` seconds (i.e. check interval).
@@ -670,6 +711,11 @@ fast hardware. SSL/TLS authentication must be used in this mode.
      stale-routes-check n [t]
 
   If ``t`` is not present it defaults to ``n``.
+
+  Only dynamically learned routes are subject to this check. Routes added from
+  configuration, such as ``--iroute`` entries and a client's pushed ifconfig
+  address, are never removed by it; they are dropped only when the client
+  disconnects.
 
   This option helps to keep the dynamic routing table small. See also
   ``--max-routes-per-client``

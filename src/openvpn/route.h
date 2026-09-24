@@ -377,8 +377,6 @@ void print_route_options(const struct route_option_list *rol, msglvl_t msglevel)
 
 #endif
 
-void print_routes(const struct route_list *rl, msglvl_t msglevel);
-
 #ifdef _WIN32
 
 void show_routes(msglvl_t msglevel);
@@ -407,19 +405,6 @@ netbits_to_netmask(const int netbits)
         mask = IPV4_NETMASK_HOST << (addrlen - netbits);
     }
     return mask;
-}
-
-static inline bool
-route_list_vpn_gateway_needed(const struct route_list *rl)
-{
-    if (!rl)
-    {
-        return false;
-    }
-    else
-    {
-        return !(rl->spec.flags & RTSA_REMOTE_ENDPOINT);
-    }
 }
 
 static inline int

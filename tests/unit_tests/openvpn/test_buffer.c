@@ -51,7 +51,7 @@ test_buffer_strprefix(void **state)
 
 #define assert_buf_equals_str(buf, str)        \
     assert_int_equal(BLENZ(buf), strlen(str)); \
-    assert_memory_equal(BPTR(buf), str, BLENZ(buf));
+    assert_memory_equal(CBPTR(buf), str, BLENZ(buf));
 
 static void
 test_buffer_printf_catrunc(void **state)
@@ -88,7 +88,7 @@ test_buffer_format_hex_ex(void **state)
 
     int maxoutput = 0;
     unsigned int blocksize = 5;
-    char *separator = " ";
+    const char *separator = " ";
     output = format_hex_ex(input, input_size, maxoutput, blocksize, separator, &gc);
     assert_string_equal(output, "0100ff10ff 00f00f090a");
 
@@ -174,7 +174,7 @@ test_buffer_list_aggregate_separator_noop(void **state)
     /* With a max length of 2, no aggregation should take place */
     buffer_list_aggregate_separator(ctx->one_two_three, 2, testsep);
     assert_int_equal(ctx->one_two_three->size, 3);
-    struct buffer *buf = buffer_list_peek(ctx->one_two_three);
+    const struct buffer *buf = buffer_list_peek(ctx->one_two_three);
     assert_buf_equals_str(buf, teststr1);
 }
 
@@ -189,7 +189,7 @@ test_buffer_list_aggregate_separator_two(void **state)
      */
     buffer_list_aggregate_separator(ctx->one_two_three, strlen(expected) + 1, testsep);
     assert_int_equal(ctx->one_two_three->size, 2);
-    struct buffer *buf = buffer_list_peek(ctx->one_two_three);
+    const struct buffer *buf = buffer_list_peek(ctx->one_two_three);
     assert_buf_equals_str(buf, expected);
 }
 
@@ -201,7 +201,7 @@ test_buffer_list_aggregate_separator_all(void **state)
     /* Aggregate all */
     buffer_list_aggregate_separator(ctx->one_two_three, 1 << 16, testsep);
     assert_int_equal(ctx->one_two_three->size, 1);
-    struct buffer *buf = buffer_list_peek(ctx->one_two_three);
+    const struct buffer *buf = buffer_list_peek(ctx->one_two_three);
     assert_buf_equals_str(buf, teststr1 testsep teststr2 testsep teststr3 testsep);
 }
 
@@ -213,7 +213,7 @@ test_buffer_list_aggregate_separator_nosep(void **state)
     /* Aggregate all */
     buffer_list_aggregate_separator(ctx->one_two_three, 1 << 16, testnosep);
     assert_int_equal(ctx->one_two_three->size, 1);
-    struct buffer *buf = buffer_list_peek(ctx->one_two_three);
+    const struct buffer *buf = buffer_list_peek(ctx->one_two_three);
     assert_buf_equals_str(buf, teststr1 teststr2 teststr3);
 }
 
@@ -226,7 +226,7 @@ test_buffer_list_aggregate_separator_zerolen(void **state)
     /* Aggregate all */
     buffer_list_aggregate_separator(bl_zerolen, 1 << 16, testnosep);
     assert_int_equal(bl_zerolen->size, 1);
-    struct buffer *buf = buffer_list_peek(bl_zerolen);
+    const struct buffer *buf = buffer_list_peek(bl_zerolen);
     assert_buf_equals_str(buf, "");
 }
 
@@ -239,7 +239,7 @@ test_buffer_list_aggregate_separator_emptybuffers(void **state)
     /* Aggregate all */
     buffer_list_aggregate_separator(bl_emptybuffers, 1 << 16, testnosep);
     assert_int_equal(bl_emptybuffers->size, 1);
-    struct buffer *buf = buffer_list_peek(bl_emptybuffers);
+    const struct buffer *buf = buffer_list_peek(bl_emptybuffers);
     assert_int_equal(BLEN(buf), 0);
 }
 
@@ -456,6 +456,35 @@ test_buffer_chomp(void **state)
     /* Check that our own method agrees */
     assert_true(string_check_buf(&buf2, CC_PRINT | CC_NULL, CC_CRLF));
     assert_string_equal(BSTR(&buf2), "CR_RESPONSE,MTIx");
+    gc_free(&gc);
+}
+
+static void
+test_buffer_extract_field(void **state)
+{
+    struct gc_arena gc = gc_new();
+    struct buffer buf = alloc_buf_gc(1000, &gc);
+    assert_null(buf_extract_field(&buf, ',', &gc));
+
+    buf = alloc_buf_gc(5, &gc);
+    buf_write(&buf, "12345", 5);
+    const char *ret = buf_extract_field(&buf, '5', &gc);
+    assert_string_equal(ret, "1234");
+    /* nothing left after the 5 */
+    assert_int_equal(buf_len(&buf), 0);
+
+    buf = alloc_buf_gc(5, &gc);
+    buf_write(&buf, "12345", 5);
+    ret = buf_extract_field(&buf, '4', &gc);
+    assert_string_equal(ret, "123");
+
+    /* 5 should be left */
+    assert_int_equal(buf_len(&buf), 1);
+    assert_memory_equal(buf_bptr(&buf), "5", 1);
+
+    buf = alloc_buf_gc(5, &gc);
+    buf_write(&buf, "12345", 5);
+    assert_null(buf_extract_field(&buf, '6', &gc));
 
     gc_free(&gc);
 }
@@ -567,7 +596,8 @@ main(void)
         cmocka_unit_test(test_checked_snprintf),
         cmocka_unit_test(test_buffer_chomp),
         cmocka_unit_test(test_buffer_null_terminate),
-        cmocka_unit_test(test_buffer_parse)
+        cmocka_unit_test(test_buffer_parse),
+        cmocka_unit_test(test_buffer_extract_field)
     };
 
     return cmocka_run_group_tests_name("buffer", tests, NULL, NULL);

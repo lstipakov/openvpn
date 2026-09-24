@@ -213,7 +213,7 @@ epoch_generate_future_receive_keys(struct crypto_options *co)
      *
      * The last generated key might have been moved to the decrypt key already.
      */
-    struct key_ctx *highest_future_key =
+    const struct key_ctx *highest_future_key =
         &co->epoch_data_keys_future[co->epoch_data_keys_future_count - 1];
 
     ASSERT(co->epoch_key_recv.epoch == 1 || highest_future_key->epoch == co->epoch_key_recv.epoch
@@ -308,9 +308,10 @@ epoch_replace_update_recv_key(struct crypto_options *co, uint16_t new_epoch)
         free_key_ctx(&co->key_ctx_bi.encrypt);
 
         /* Update the epoch_key for send to match the current key being used.
-         * This is a bit of extra work but since we are a maximum of 16
-         * keys behind, a maximum 16 HMAC invocations are a small price to
-         * pay for not keeping all the old epoch keys around in future_keys
+         * This is a bit of extra work but since we are a maximum of
+         * epoch_data_keys_future_count keys behind (4 by default),
+         * a maximum 4 HMAC invocations are a small price to pay for not
+         * keeping all the old epoch keys around in future_keys
          * array */
         while (co->epoch_key_send.epoch < new_epoch)
         {

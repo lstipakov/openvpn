@@ -102,16 +102,6 @@ provider_t *crypto_load_provider(const char *provider);
  */
 void crypto_unload_provider(const char *provname, provider_t *provider);
 
-#ifdef DMALLOC
-/*
- * OpenSSL memory debugging.  If dmalloc debugging is enabled, tell
- * OpenSSL to use our private malloc/realloc/free functions so that
- * we can dispatch them to dmalloc.
- */
-void crypto_init_dmalloc(void);
-
-#endif /* DMALLOC */
-
 void show_available_ciphers(void);
 
 void show_available_digests(void);
@@ -455,7 +445,7 @@ int cipher_ctx_update_ad(cipher_ctx_t *ctx, const uint8_t *src, int src_len);
  *
  * @return              \c 0 on failure, \c 1 on success.
  */
-int cipher_ctx_update(cipher_ctx_t *ctx, uint8_t *dst, int *dst_len, uint8_t *src, int src_len);
+int cipher_ctx_update(cipher_ctx_t *ctx, uint8_t *dst, int *dst_len, const uint8_t *src, int src_len);
 
 /**
  * Pads the final cipher block using PKCS padding, and output to the destination

@@ -59,7 +59,7 @@ SUBDIRS = distro include src sample doc tests
 dist_doc_DATA = \
 	README \
 	README.mbedtls \
-	Changes.rst \
+	Changes.md \
 	COPYRIGHT.GPL \
 	COPYING
 
@@ -67,6 +67,7 @@ dist_noinst_DATA = \
 	.gitignore \
 	.gitattributes \
 	CONTRIBUTING.rst \
+	CODE_CHECKLIST.md \
 	PORTS \
 	README.cmake.md \
 	README.dco.md \
@@ -95,4 +96,5 @@ cppcheck:
 	BUILD_DIR="$(abs_top_builddir)" \
 	SOURCE_DIR="$(abs_top_srcdir)" \
 	INCLUDE_FLAGS="$(LIBNL_GENL_CFLAGS)" \
+	CPPCHECK_VERBOSE="$(AM_V_P)" \
 		"$(top_srcdir)/dev-tools/run-cppcheck.sh"
