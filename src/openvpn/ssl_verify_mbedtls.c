@@ -137,45 +137,184 @@ x509_username_field_ext_supported(const char *fieldname)
     return false;
 }
 
+static const char *
+fieldname_to_oid(const char *fieldname)
+{
+    if (strcmp(fieldname, "C") == 0)
+    {
+        return MBEDTLS_OID_AT_COUNTRY;
+    }
+    else if (strcmp(fieldname, "ST") == 0)
+    {
+        return MBEDTLS_OID_AT_STATE;
+    }
+    else if (strcmp(fieldname, "LOCALITY") == 0)
+    {
+        return MBEDTLS_OID_AT_LOCALITY;
+    }
+    else if (strcmp(fieldname, "O") == 0)
+    {
+        return MBEDTLS_OID_AT_ORGANIZATION;
+    }
+    else if (strcmp(fieldname, "OU") == 0)
+    {
+        return MBEDTLS_OID_AT_ORG_UNIT;
+    }
+    else if (strcmp(fieldname, "CN") == 0)
+    {
+        return MBEDTLS_OID_AT_CN;
+    }
+    else if (strcmp(fieldname, "GN") == 0)
+    {
+        return MBEDTLS_OID_AT_GIVEN_NAME;
+    }
+    else if (strcmp(fieldname, "SN") == 0)
+    {
+        return MBEDTLS_OID_AT_SUR_NAME;
+    }
+    else if (strcmp(fieldname, "initials") == 0)
+    {
+        return MBEDTLS_OID_AT_INITIALS;
+    }
+    else if (strcmp(fieldname, "pseudonym") == 0)
+    {
+        return MBEDTLS_OID_AT_PSEUDONYM;
+    }
+    else if (strcmp(fieldname, "title") == 0)
+    {
+        return MBEDTLS_OID_AT_TITLE;
+    }
+    else if (strcmp(fieldname, "generationQualifier") == 0)
+    {
+        return MBEDTLS_OID_AT_GENERATION_QUALIFIER;
+    }
+    else if (strcmp(fieldname, "postalAddress") == 0)
+    {
+        return MBEDTLS_OID_AT_POSTAL_ADDRESS;
+    }
+    else if (strcmp(fieldname, "postalCode") == 0)
+    {
+        return MBEDTLS_OID_AT_POSTAL_CODE;
+    }
+    else if (strcmp(fieldname, "emailAddress") == 0)
+    {
+        return MBEDTLS_OID_PKCS9_EMAIL;
+    }
+    else if (strcmp(fieldname, "uid") == 0)
+    {
+        return MBEDTLS_OID_AT_UNIQUE_IDENTIFIER;
+    }
+    else if (strcmp(fieldname, "dnQualifier") == 0)
+    {
+        return MBEDTLS_OID_AT_DN_QUALIFIER;
+    }
+    else
+    {
+        return NULL;
+    }
+}
+
+static bool
+asn1_buf_is_cstr_compatible(const mbedtls_asn1_buf *asn1_buf)
+{
+    if (!(asn1_buf->tag == MBEDTLS_ASN1_UTF8_STRING || asn1_buf->tag == MBEDTLS_ASN1_PRINTABLE_STRING
+          || asn1_buf->tag == MBEDTLS_ASN1_IA5_STRING))
+    {
+        return false;
+    }
+    for (size_t i = 0; i < asn1_buf->len; i++)
+    {
+        if (asn1_buf->p[i] == '\0')
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 result_t
 backend_x509_get_username(char *cn, size_t cn_len, char *x509_username_field, mbedtls_x509_crt *cert)
 {
-    mbedtls_x509_name *name;
+    ASSERT(cn != NULL && cn_len > 0 && cert != NULL);
 
-    ASSERT(cn != NULL);
-
-    name = &cert->subject;
-
-    /* Find common name */
-    while (name != NULL)
+    if (x509_username_field == NULL)
     {
-        if (0 == memcmp(name->oid.p, MBEDTLS_OID_AT_CN, MBEDTLS_OID_SIZE(MBEDTLS_OID_AT_CN)))
+        goto fail;
+    }
+
+    if (strcmp(x509_username_field, "serialNumber") == 0)
+    {
+        if (cn_len < 2)
         {
-            break;
+            goto fail;
+        }
+        cn[0] = '0';
+        cn[1] = 'x';
+        size_t cn_index = 2;
+        bool leading_zeros = true;
+        for (size_t i = 0; i < cert->serial.len; i++)
+        {
+            uint8_t serial_byte = cert->serial.p[i];
+            if (leading_zeros && serial_byte == 0)
+            {
+                continue;
+            }
+            leading_zeros = false;
+            if (cn_index > cn_len - 3)
+            {
+                goto fail;
+            }
+            snprintf(&cn[cn_index], cn_len - cn_index, "%02X", serial_byte);
+            cn_index += 2;
+        }
+        return SUCCESS;
+    }
+
+    const char *field_oid = fieldname_to_oid(x509_username_field);
+    if (field_oid == NULL)
+    {
+        goto fail;
+    }
+
+    /* Find field_oid in the subject name. */
+    mbedtls_x509_name *name = NULL;
+    mbedtls_x509_name *next = &cert->subject;
+    while (next != NULL)
+    {
+        if (strlen(field_oid) == next->oid.len
+            && 0 == memcmp(next->oid.p, field_oid, next->oid.len))
+        {
+            name = next;
         }
 
-        name = name->next;
+        next = next->next;
     }
 
     /* Not found, return an error if this is the peer's certificate */
     if (name == NULL)
     {
-        return FAILURE;
+        goto fail;
     }
 
-    /* Found, extract CN */
-    if (cn_len > name->val.len)
+    if (!asn1_buf_is_cstr_compatible(&name->val))
     {
-        memcpy(cn, name->val.p, name->val.len);
-        cn[name->val.len] = '\0';
+        goto fail;
     }
-    else
+
+    /* Check that we have room in the buffer, including the terminating '/0' byte. */
+    if (cn_len <= name->val.len)
     {
-        memcpy(cn, name->val.p, cn_len);
-        cn[cn_len - 1] = '\0';
+        goto fail;
     }
+
+    memcpy(cn, name->val.p, name->val.len);
+    cn[name->val.len] = '\0';
 
     return SUCCESS;
+
+fail:
+    cn[0] = '\0';
+    return FAILURE;
 }
 
 #if MBEDTLS_VERSION_NUMBER >= 0x04000000
@@ -471,22 +610,11 @@ do_setenv_x509(struct env_set *es, const char *name, char *value, int depth)
 static char *
 asn1_buf_to_c_string(const mbedtls_asn1_buf *orig, struct gc_arena *gc)
 {
-    size_t i;
     char *val;
 
-    if (!(orig->tag == MBEDTLS_ASN1_UTF8_STRING || orig->tag == MBEDTLS_ASN1_PRINTABLE_STRING
-          || orig->tag == MBEDTLS_ASN1_IA5_STRING))
+    if (!asn1_buf_is_cstr_compatible(orig))
     {
-        /* Only support C-string compatible types */
-        return string_alloc("ERROR: unsupported ASN.1 string type", gc);
-    }
-
-    for (i = 0; i < orig->len; ++i)
-    {
-        if (orig->p[i] == '\0')
-        {
-            return string_alloc("ERROR: embedded null value", gc);
-        }
+        return string_alloc("ERROR: Unsupported string type or embedded null bytes.", gc);
     }
     val = gc_malloc(orig->len + 1, false, gc);
     memcpy(val, orig->p, orig->len);
@@ -625,9 +753,9 @@ x509_setenv(struct env_set *es, int cert_depth, mbedtls_x509_crt *cert)
 /* Dummy function because Netscape certificate types are not supported in OpenVPN with mbedtls.
  * Returns SUCCESS if usage is NS_CERT_CHECK_NONE, FAILURE otherwise. */
 result_t
-x509_verify_ns_cert_type(mbedtls_x509_crt *cert, const int usage)
+x509_verify_ns_cert_type(mbedtls_x509_crt *cert, const int cert_type)
 {
-    if (usage == NS_CERT_CHECK_NONE)
+    if (cert_type == NS_CERT_CHECK_NONE)
     {
         return SUCCESS;
     }

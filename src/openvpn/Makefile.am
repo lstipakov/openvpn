@@ -47,11 +47,13 @@ openvpn_SOURCES = \
 	base64.c base64.h \
 	basic.h \
 	buffer.c buffer.h \
+	check_file_access.c check_file_access.h \
 	circ_list.h \
 	clinat.c clinat.h \
 	common.h \
 	comp.c comp.h compstub.c \
 	comp-lz4.c comp-lz4.h \
+	control_msg.c control_msg.h \
 	crypto.c crypto.h crypto_backend.h \
 	crypto_openssl.c crypto_openssl.h \
 	crypto_mbedtls_legacy.c crypto_mbedtls_legacy.h \
@@ -106,8 +108,12 @@ openvpn_SOURCES = \
 	pkcs11.c pkcs11.h pkcs11_backend.h \
 	pkcs11_openssl.c \
 	pkcs11_mbedtls.c \
+	oob.c oob.h \
+	oob_client.c oob_client.h \
 	openvpn.c openvpn.h \
 	options.c options.h \
+	options_show.c options_show.h \
+	options_string.c options_string.h \
 	options_util.c options_util.h \
 	options_parse.c \
 	otime.c otime.h \
@@ -128,6 +134,8 @@ openvpn_SOURCES = \
 	session_id.c session_id.h \
 	shaper.c shaper.h \
 	sig.c sig.h \
+	siphash_reference.c \
+	siphash.c siphash.h \
 	socket.c socket.h \
 	socket_util.c socket_util.h \
 	socks.c socks.h \

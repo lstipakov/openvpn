@@ -843,7 +843,7 @@ man_query_need_str(struct management *man, const char *type, const char *action)
 }
 
 static void
-man_forget_passwords(struct management *man)
+man_forget_passwords(void)
 {
     ssl_purge_auth(false);
     (void)ssl_clean_auth_token();
@@ -916,10 +916,9 @@ man_pkcs11_id_get(struct management *man, const int index)
 static void
 man_remote_entry_count(struct management *man)
 {
-    unsigned count = 0;
     if (man->persist.callback.remote_entry_count)
     {
-        count = (*man->persist.callback.remote_entry_count)(man->persist.callback.arg);
+        unsigned int count = (*man->persist.callback.remote_entry_count)(man->persist.callback.arg);
         msg(M_CLIENT, "%u", count);
         msg(M_CLIENT, "END");
     }
@@ -1329,8 +1328,6 @@ man_certificate(struct management *man)
 static void
 man_load_stats(struct management *man)
 {
-    extern counter_type link_read_bytes_global;
-    extern counter_type link_write_bytes_global;
     int nclients = 0;
 
     if (man->persist.callback.n_clients)
@@ -1346,18 +1343,16 @@ man_load_stats(struct management *man)
  * Checks if the correct number of arguments to a management command are present
  * and otherwise prints an error and returns false.
  *
- * @param man       The management interface struct
  * @param p         pointer to the parameter array
  * @param n         number of arguments required
  * @param flags     if MN_AT_LEAST require at least n parameters and not exactly n
  * @return          Return whether p has n (or at least n) parameters
  */
 static bool
-man_need(struct management *man, const char **p, const int n, unsigned int flags)
+man_need(const char **p, const int n, unsigned int flags)
 {
-    int i;
     ASSERT(p[0]);
-    for (i = 1; i <= n; ++i)
+    for (int i = 1; i <= n; ++i)
     {
         if (!p[i])
         {
@@ -1524,7 +1519,7 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "signal"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             man_signal(man, p[1]);
         }
@@ -1556,7 +1551,7 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "kill"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             man_kill(man, p[1]);
         }
@@ -1634,7 +1629,7 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "log"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             if (p[1])
             {
@@ -1648,7 +1643,7 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "echo"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             if (p[1])
             {
@@ -1662,14 +1657,14 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "username"))
     {
-        if (man_need(man, p, 2, 0))
+        if (man_need(p, 2, 0))
         {
             man_query_username(man, p[1], p[2]);
         }
     }
     else if (streq(p[0], "password"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             if (p[2])
             {
@@ -1687,25 +1682,25 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "forget-passwords"))
     {
-        man_forget_passwords(man);
+        man_forget_passwords();
     }
     else if (streq(p[0], "needok"))
     {
-        if (man_need(man, p, 2, 0))
+        if (man_need(p, 2, 0))
         {
             man_query_need_ok(man, p[1], p[2]);
         }
     }
     else if (streq(p[0], "needstr"))
     {
-        if (man_need(man, p, 2, 0))
+        if (man_need(p, 2, 0))
         {
             man_query_need_str(man, p[1], p[2]);
         }
     }
     else if (streq(p[0], "cr-response"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             man_send_cc_message(man, "CR_RESPONSE", p[1]);
         }
@@ -1720,42 +1715,42 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "bytecount"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             man_bytecount(man, atoi(p[1]));
         }
     }
     else if (streq(p[0], "client-kill"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             man_client_kill(man, p[1], p[2]);
         }
     }
     else if (streq(p[0], "client-deny"))
     {
-        if (man_need(man, p, 3, MN_AT_LEAST))
+        if (man_need(p, 3, MN_AT_LEAST))
         {
             man_client_deny(man, p[1], p[2], p[3], p[4]);
         }
     }
     else if (streq(p[0], "client-auth-nt"))
     {
-        if (man_need(man, p, 2, 0))
+        if (man_need(p, 2, 0))
         {
             man_client_auth(man, p[1], p[2], false);
         }
     }
     else if (streq(p[0], "client-auth"))
     {
-        if (man_need(man, p, 2, 0))
+        if (man_need(p, 2, 0))
         {
             man_client_auth(man, p[1], p[2], true);
         }
     }
     else if (streq(p[0], "client-pending-auth"))
     {
-        if (man_need(man, p, 4, 0))
+        if (man_need(p, 4, 0))
         {
             man_client_pending_auth(man, p[1], p[2], p[3], p[4]);
         }
@@ -1779,7 +1774,7 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "pkcs11-id-get"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             man_pkcs11_id_get(man, atoi(p[1]));
         }
@@ -1791,35 +1786,35 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
     }
     else if (streq(p[0], "remote-entry-get"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             man_remote_entry_get(man, p[1], p[2]);
         }
     }
     else if (streq(p[0], "proxy"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             man_proxy(man, p);
         }
     }
     else if (streq(p[0], "remote"))
     {
-        if (man_need(man, p, 1, MN_AT_LEAST))
+        if (man_need(p, 1, MN_AT_LEAST))
         {
             man_remote(man, p);
         }
     }
     else if (streq(p[0], "push-update-broad"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             man_push_update(man, p, UPT_BROADCAST);
         }
     }
     else if (streq(p[0], "push-update-cid"))
     {
-        if (man_need(man, p, 2, 0))
+        if (man_need(p, 2, 0))
         {
             man_push_update(man, p, UPT_BY_CID);
         }
@@ -1827,7 +1822,7 @@ man_dispatch_command(struct management *man, struct status_output *so, const cha
 #if 1
     else if (streq(p[0], "test"))
     {
-        if (man_need(man, p, 1, 0))
+        if (man_need(p, 1, 0))
         {
             int i;
             const int n = atoi(p[1]);
@@ -2049,7 +2044,7 @@ man_listen(struct management *man)
         {
             man->connection.sd_top = create_socket_tcp(man->settings.local);
             socket_bind(man->connection.sd_top, man->settings.local, man->settings.local->ai_family,
-                        "MANAGEMENT", false);
+                        "MANAGEMENT", false, M_FATAL);
         }
 
         /*
@@ -2282,7 +2277,7 @@ man_io_error(struct management *man, const char *prefix)
 
 #ifdef TARGET_ANDROID
 static ssize_t
-man_send_with_fd(int fd, void *ptr, size_t nbytes, int flags, int sendfd)
+man_send_with_fd(int fd, const void *ptr, size_t nbytes, int flags, int sendfd)
 {
     struct msghdr msg = { 0 };
     struct iovec iov[1];
@@ -2306,12 +2301,14 @@ man_send_with_fd(int fd, void *ptr, size_t nbytes, int flags, int sendfd)
     msg.msg_name = NULL;
     msg.msg_namelen = 0;
 
-    iov[0].iov_base = ptr;
+    /* sendmsg takes a const msghdr, but we can't construct that here
+       directly, so cast */
+    iov[0].iov_base = (void *)ptr;
     iov[0].iov_len = nbytes;
     msg.msg_iov = iov;
     msg.msg_iovlen = 1;
 
-    return (sendmsg(fd, &msg, flags));
+    return sendmsg(fd, &msg, flags);
 }
 
 static ssize_t
@@ -2516,24 +2513,23 @@ man_write(struct management *man)
 {
     const int size_hint = 1024;
     ssize_t sent = 0;
-    const struct buffer *buf;
 
     buffer_list_aggregate(man->connection.out, size_hint);
-    buf = buffer_list_peek(man->connection.out);
+    const struct buffer *buf = buffer_list_peek(man->connection.out);
     if (buf && BLEN(buf))
     {
         const int len = min_int(size_hint, BLEN(buf));
 #ifdef TARGET_ANDROID
         if (man->connection.fdtosend > 0)
         {
-            sent = man_send_with_fd(man->connection.sd_cli, BPTR(buf), len, MSG_NOSIGNAL,
+            sent = man_send_with_fd(man->connection.sd_cli, CBPTR(buf), len, MSG_NOSIGNAL,
                                     man->connection.fdtosend);
             man->connection.fdtosend = -1;
         }
         else
 #endif
         {
-            sent = send(man->connection.sd_cli, (const void *)BPTR(buf), len, MSG_NOSIGNAL);
+            sent = send(man->connection.sd_cli, CBSTR(buf), len, MSG_NOSIGNAL);
         }
         if (sent >= 0)
         {
@@ -3026,13 +3022,13 @@ management_up_down(struct management *man, const char *updown, const struct env_
 }
 
 void
-management_notify(struct management *man, const char *severity, const char *type, const char *text)
+management_notify(const char *severity, const char *type, const char *text)
 {
     msg(M_CLIENT, ">NOTIFY:%s,%s,%s", severity, type, text);
 }
 
 void
-management_notify_generic(struct management *man, const char *str)
+management_notify_generic(const char *str)
 {
     msg(M_CLIENT, "%s", str);
 }
@@ -3066,7 +3062,7 @@ man_output_peer_info_env(struct management *man, const struct man_def_auth_conte
 }
 
 void
-management_notify_client_needing_auth(struct management *management, const unsigned int mda_key_id,
+management_notify_client_needing_auth(struct management *man, const unsigned int mda_key_id,
                                       struct man_def_auth_context *mdac, const struct env_set *es)
 {
     if (!(mdac->flags & DAF_CONNECTION_CLOSED))
@@ -3077,12 +3073,12 @@ management_notify_client_needing_auth(struct management *management, const unsig
             mode = "REAUTH";
         }
         msg(M_CLIENT, ">CLIENT:%s,%lu,%u", mode, mdac->cid, mda_key_id);
-        man_output_extra_env(management, "CLIENT");
-        if (management->connection.env_filter_level > 0)
+        man_output_extra_env(man, "CLIENT");
+        if (man->connection.env_filter_level > 0)
         {
-            man_output_peer_info_env(management, mdac);
+            man_output_peer_info_env(man, mdac);
         }
-        man_output_env(es, true, management->connection.env_filter_level, "CLIENT");
+        man_output_env(es, true, man->connection.env_filter_level, "CLIENT");
         mdac->flags |= DAF_INITIAL_AUTH;
     }
 }
@@ -3108,29 +3104,30 @@ management_notify_client_cr_response(unsigned mda_key_id, const struct man_def_a
 }
 
 void
-management_connection_established(struct management *management, struct man_def_auth_context *mdac,
+management_connection_established(struct management *man, struct man_def_auth_context *mdac,
                                   const struct env_set *es)
 {
     mdac->flags |= DAF_CONNECTION_ESTABLISHED;
     msg(M_CLIENT, ">CLIENT:ESTABLISHED,%lu", mdac->cid);
-    man_output_extra_env(management, "CLIENT");
-    man_output_env(es, true, management->connection.env_filter_level, "CLIENT");
+    man_output_extra_env(man, "CLIENT");
+    man_output_env(es, true, man->connection.env_filter_level, "CLIENT");
 }
 
 void
-management_notify_client_close(struct management *management, struct man_def_auth_context *mdac,
+management_notify_client_close(const struct management *man,
+                               struct man_def_auth_context *mdac,
                                const struct env_set *es)
 {
     if ((mdac->flags & DAF_INITIAL_AUTH) && !(mdac->flags & DAF_CONNECTION_CLOSED))
     {
         msg(M_CLIENT, ">CLIENT:DISCONNECT,%lu", mdac->cid);
-        man_output_env(es, true, management->connection.env_filter_level, "CLIENT");
+        man_output_env(es, true, man->connection.env_filter_level, "CLIENT");
         mdac->flags |= DAF_CONNECTION_CLOSED;
     }
 }
 
 void
-management_learn_addr(struct management *management, struct man_def_auth_context *mdac,
+management_learn_addr(struct man_def_auth_context *mdac,
                       const struct mroute_addr *addr, const bool primary)
 {
     struct gc_arena gc = gc_new();
@@ -3222,7 +3219,7 @@ management_auth_failure(struct management *man, const char *type, const char *re
 }
 
 void
-management_auth_token(struct management *man, const char *token)
+management_auth_token(const char *token)
 {
     msg(M_CLIENT, ">PASSWORD:Auth-Token:%s", token);
 }
@@ -3745,7 +3742,6 @@ management_query_multiline(struct management *man, const char *b64_data, const c
     struct gc_arena gc = gc_new();
     int ret = 0;
     volatile int signal_received = 0;
-    struct buffer alert_msg = clear_buf();
     const bool standalone_disabled_save = man->persist.standalone_disabled;
     struct man_connection *mc = &man->connection;
 
@@ -3757,6 +3753,7 @@ management_query_multiline(struct management *man, const char *b64_data, const c
 
         *state = EKS_SOLICIT;
 
+        struct buffer alert_msg;
         if (b64_data)
         {
             alert_msg = alloc_buf_gc(strlen(b64_data) + strlen(prompt) + 3, &gc);
@@ -3823,7 +3820,7 @@ management_query_multiline_flatten_newline(struct management *man, const char *b
 {
     int ok;
     char *result = NULL;
-    struct buffer *buf;
+    const struct buffer *buf;
 
     ok = management_query_multiline(man, b64_data, prompt, cmd, state, input);
     if (ok && buffer_list_defined(*input))
@@ -3852,7 +3849,7 @@ management_query_multiline_flatten(struct management *man, const char *b64_data,
 {
     int ok;
     char *result = NULL;
-    struct buffer *buf;
+    const struct buffer *buf;
 
     ok = management_query_multiline(man, b64_data, prompt, cmd, state, input);
     if (ok && buffer_list_defined(*input))
@@ -3984,12 +3981,12 @@ management_hold(struct management *man, int holdtime)
  */
 
 struct command_line *
-command_line_new(const size_t buf_len)
+command_line_new(const size_t len)
 {
     struct command_line *cl;
     ALLOC_OBJ_CLEAR(cl, struct command_line);
-    cl->buf = alloc_buf(buf_len);
-    cl->residual = alloc_buf(buf_len);
+    cl->buf = alloc_buf(len);
+    cl->residual = alloc_buf(len);
     return cl;
 }
 

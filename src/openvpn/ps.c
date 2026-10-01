@@ -208,7 +208,9 @@ port_share_sendmsg(const socket_descriptor_t sd, const char command, const struc
 
         if (head)
         {
-            iov[1].iov_base = BPTR(head);
+            /* sendmsg takes a const msghdr, but we can't construct that here
+               directly, so cast */
+            iov[1].iov_base = (char *)CBPTR(head);
             iov[1].iov_len = BLENZ(head);
             mesg.msg_iovlen = 2;
         }
@@ -813,9 +815,9 @@ port_share_open(const char *host, const char *port, const int max_initial_buf,
      * Get host's IP address
      */
     struct addrinfo *ai;
-    int status = openvpn_getaddrinfo(GETADDR_RESOLVE | GETADDR_FATAL, host, port,
-                                     0, NULL, AF_UNSPEC, &ai);
-    ASSERT(status == 0);
+    int ga_status = openvpn_getaddrinfo(GETADDR_RESOLVE | GETADDR_FATAL, host, port,
+                                        0, NULL, AF_UNSPEC, &ai);
+    ASSERT(ga_status == 0);
     ASSERT(sizeof(hostaddr.addr) >= ai->ai_addrlen);
     memcpy(&hostaddr.addr.sa, ai->ai_addr, ai->ai_addrlen);
     freeaddrinfo(ai);
@@ -863,8 +865,8 @@ port_share_open(const char *host, const char *port, const int max_initial_buf,
         set_cloexec(fd[0]);
 
         /* wait for background child process to initialize */
-        int status = recv_control(fd[0]);
-        if (status == RESPONSE_INIT_SUCCEEDED)
+        int recv_status = recv_control(fd[0]);
+        if (recv_status == RESPONSE_INIT_SUCCEEDED)
         {
             /* note that this will cause possible EAGAIN when writing to
              * control socket if proxy process is backlogged */
@@ -875,7 +877,7 @@ port_share_open(const char *host, const char *port, const int max_initial_buf,
         }
         else
         {
-            msg(M_ERR, "PORT SHARE: unexpected init recv_control status=%d", status);
+            msg(M_ERR, "PORT SHARE: unexpected init recv_control status=%d", recv_status);
         }
     }
     else
@@ -964,7 +966,7 @@ port_share_abort(struct port_share *ps)
 bool
 is_openvpn_protocol(const struct buffer *buf)
 {
-    const unsigned char *p = (const unsigned char *)BSTR(buf);
+    const unsigned char *p = (const unsigned char *)CBSTR(buf);
     const int len = BLEN(buf);
     if (len >= 3)
     {

@@ -33,6 +33,7 @@
 #include "socket_util.h"
 
 #include "memdbg.h"
+#include "siphash.h"
 
 void
 mroute_addr_init(struct mroute_addr *addr)
@@ -149,12 +150,12 @@ mroute_extract_addr_ip(struct mroute_addr *src, struct mroute_addr *dest, const 
     unsigned int ret = 0;
     if (BLEN(buf) >= 1)
     {
-        switch (OPENVPN_IPH_GET_VER(*BPTR(buf)))
+        switch (OPENVPN_IPH_GET_VER(*CBPTR(buf)))
         {
             case 4:
                 if (BLENZ(buf) >= sizeof(struct openvpn_iphdr))
                 {
-                    const struct openvpn_iphdr *ip = (const struct openvpn_iphdr *)BPTR(buf);
+                    const struct openvpn_iphdr *ip = (const struct openvpn_iphdr *)CBPTR(buf);
 
                     mroute_get_in_addr_t(src, ip->saddr);
                     mroute_get_in_addr_t(dest, ip->daddr);
@@ -178,7 +179,7 @@ mroute_extract_addr_ip(struct mroute_addr *src, struct mroute_addr *dest, const 
             case 6:
                 if (BLENZ(buf) >= sizeof(struct openvpn_ipv6hdr))
                 {
-                    const struct openvpn_ipv6hdr *ipv6 = (const struct openvpn_ipv6hdr *)BPTR(buf);
+                    const struct openvpn_ipv6hdr *ipv6 = (const struct openvpn_ipv6hdr *)CBPTR(buf);
 #if 0 /* very basic debug */
                     struct gc_arena gc = gc_new();
                     msg( M_INFO, "IPv6 packet! src=%s, dst=%s",
@@ -201,7 +202,7 @@ mroute_extract_addr_ip(struct mroute_addr *src, struct mroute_addr *dest, const 
 
             default:
                 msg(M_WARN, "IP packet with unknown IP version=%d seen",
-                    OPENVPN_IPH_GET_VER(*BPTR(buf)));
+                    OPENVPN_IPH_GET_VER(*CBPTR(buf)));
         }
     }
     return ret;
@@ -225,7 +226,7 @@ mroute_extract_addr_ether(struct mroute_addr *src, struct mroute_addr *dest, uin
     unsigned int ret = 0;
     if (BLEN(buf) >= (int)sizeof(struct openvpn_ethhdr))
     {
-        const struct openvpn_ethhdr *eth = (const struct openvpn_ethhdr *)BPTR(buf);
+        const struct openvpn_ethhdr *eth = (const struct openvpn_ethhdr *)CBPTR(buf);
         if (src)
         {
             mroute_copy_ether_to_addr(src, eth->source, vid);
@@ -354,11 +355,11 @@ mroute_addr_mask_host_bits(struct mroute_addr *ma)
  * address type, number of bits in the network address,
  * and the actual address.
  */
-uint32_t
-mroute_addr_hash_function(const void *key, uint32_t iv)
+uint64_t
+mroute_addr_hash_function(const void *key, const uint8_t hash_key[HASH_KEY_LEN])
 {
-    return hash_func(mroute_addr_hash_ptr((const struct mroute_addr *)key),
-                     mroute_addr_hash_len((const struct mroute_addr *)key), iv);
+    return siphash_hash_func(mroute_addr_hash_ptr((const struct mroute_addr *)key),
+                             mroute_addr_hash_len((const struct mroute_addr *)key), hash_key);
 }
 
 bool

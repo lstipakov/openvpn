@@ -99,7 +99,6 @@ message_splitter(const char *s, struct buffer_list *msgs, struct gc_arena *gc, c
     }
 
     char *str = gc_strdup(s, gc);
-    size_t i = 0;
 
     while (*str)
     {
@@ -112,11 +111,11 @@ message_splitter(const char *s, struct buffer_list *msgs, struct gc_arena *gc, c
                 /* if no commas were found go to fail, do not send any message */
                 return false;
             }
+            /* copy from current position to (ci - 1) */
             str[ci] = '\0';
-            /* copy from i to (ci -1) */
             struct buffer tmp = forge_msg(str, ",push-continuation 2", gc);
             buffer_list_push(msgs, BSTR(&tmp));
-            i = ci + 1;
+            str += ci + 1;
         }
         else
         {
@@ -130,9 +129,8 @@ message_splitter(const char *s, struct buffer_list *msgs, struct gc_arena *gc, c
                 struct buffer tmp = forge_msg(str, NULL, gc);
                 buffer_list_push(msgs, BSTR(&tmp));
             }
-            i = strlen(str);
+            break;
         }
-        str = &str[i];
     }
     return true;
 }
@@ -185,10 +183,10 @@ send_single_push_update(struct multi_context *m, struct multi_instance *mi, stru
          */
         struct buffer tmp_msg = e->buf;
         buf_string_compare_advance(&tmp_msg, push_update_cmd);
-        unsigned int permission_mask = pull_permission_mask(c);
+        uint64_t permission_mask = pull_permission_mask(c);
         if (process_push_update(c, &o, permission_mask, &option_types_found, &tmp_msg, true) == PUSH_MSG_ERROR)
         {
-            msg(M_WARN, "Failed to process push update message sent to client ID: %u", c->c2.tls_multi->peer_id);
+            msg(M_WARN, "Failed to process push update message sent to client ID: %u", c->c2.tls_multi->rx_peer_id);
         }
         e = e->next;
     }
@@ -294,7 +292,7 @@ send_push_update(struct multi_context *m, const void *target, const char *msg, c
 
         if (!support_push_update(mi))
         {
-            msg(M_CLIENT, "PUSH_UPDATE: not sending message to unsupported peer with ID: %u", mi->context.c2.tls_multi->peer_id);
+            msg(M_CLIENT, "PUSH_UPDATE: not sending message to unsupported peer with ID: %u", mi->context.c2.tls_multi->rx_peer_id);
             buffer_list_free(msgs);
             gc_free(&gc);
             return 0;
@@ -329,7 +327,7 @@ send_push_update(struct multi_context *m, const void *target, const char *msg, c
         /* Type is UPT_BROADCAST so we update every client */
         if (!send_single_push_update(m, curr_mi, msgs))
         {
-            msg(M_CLIENT, "ERROR: Peer ID: %u has not been updated", curr_mi->context.c2.tls_multi->peer_id);
+            msg(M_CLIENT, "ERROR: Peer ID: %u has not been updated", curr_mi->context.c2.tls_multi->rx_peer_id);
             continue;
         }
         count++;

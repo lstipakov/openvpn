@@ -40,7 +40,7 @@ struct hash_element
 {
     void *value;
     const void *key;
-    uint32_t hash_value;
+    uint64_t hash_value;
     struct hash_element *next;
 };
 
@@ -49,19 +49,24 @@ struct hash_bucket
     struct hash_element *list;
 };
 
+
+#define HASH_KEY_LEN 16
+
 struct hash
 {
     uint32_t n_buckets;
     uint32_t n_elements;
     uint32_t mask;
-    uint32_t iv;
-    uint32_t (*hash_function)(const void *key, uint32_t iv);
+    /** key/iv used for the hash function. No to be confused with the (key, value)
+     * keys for the actual hash map entries */
+    uint8_t hash_key[HASH_KEY_LEN];
+    uint64_t (*hash_function)(const void *key, const uint8_t hash_key[HASH_KEY_LEN]);
     bool (*compare_function)(const void *key1, const void *key2); /* return true if equal */
     struct hash_bucket *buckets;
 };
 
-struct hash *hash_init(const uint32_t n_buckets, const uint32_t iv,
-                       uint32_t (*hash_function)(const void *key, uint32_t iv),
+struct hash *hash_init(const uint32_t n_buckets,
+                       uint64_t (*hash_function)(const void *key, const uint8_t hash_key[HASH_KEY_LEN]),
                        bool (*compare_function)(const void *key1, const void *key2));
 
 void hash_free(struct hash *hash);
@@ -69,9 +74,9 @@ void hash_free(struct hash *hash);
 bool hash_add(struct hash *hash, const void *key, void *value, bool replace);
 
 struct hash_element *hash_lookup_fast(struct hash *hash, struct hash_bucket *bucket,
-                                      const void *key, uint32_t hv);
+                                      const void *key, uint64_t hv);
 
-bool hash_remove_fast(struct hash *hash, struct hash_bucket *bucket, const void *key, uint32_t hv);
+bool hash_remove_fast(struct hash *hash, struct hash_bucket *bucket, const void *key, uint64_t hv);
 
 void hash_remove_by_value(struct hash *hash, void *value);
 
@@ -98,12 +103,10 @@ void hash_iterator_delete_element(struct hash_iterator *hi);
 
 void hash_iterator_free(struct hash_iterator *hi);
 
-uint32_t hash_func(const uint8_t *k, uint32_t length, uint32_t initval);
-
-static inline uint32_t
+static inline uint64_t
 hash_value(const struct hash *hash, const void *key)
 {
-    return (*hash->hash_function)(key, hash->iv);
+    return (*hash->hash_function)(key, hash->hash_key);
 }
 
 static inline uint32_t
@@ -119,7 +122,7 @@ hash_n_buckets(const struct hash *hash)
 }
 
 static inline struct hash_bucket *
-hash_bucket(struct hash *hash, uint32_t hv)
+hash_bucket(struct hash *hash, uint64_t hv)
 {
     return &hash->buckets[hv & hash->mask];
 }
@@ -129,7 +132,7 @@ hash_lookup(struct hash *hash, const void *key)
 {
     void *ret = NULL;
     struct hash_element *he;
-    uint32_t hv = hash_value(hash, key);
+    uint64_t hv = hash_value(hash, key);
     struct hash_bucket *bucket = &hash->buckets[hv & hash->mask];
 
     he = hash_lookup_fast(hash, bucket, key, hv);
@@ -143,7 +146,7 @@ hash_lookup(struct hash *hash, const void *key)
 
 /* NOTE: assumes that key is not a duplicate */
 static inline void
-hash_add_fast(struct hash *hash, struct hash_bucket *bucket, const void *key, uint32_t hv,
+hash_add_fast(struct hash *hash, struct hash_bucket *bucket, const void *key, uint64_t hv,
               void *value)
 {
     struct hash_element *he;
@@ -160,7 +163,7 @@ hash_add_fast(struct hash *hash, struct hash_bucket *bucket, const void *key, ui
 static inline bool
 hash_remove(struct hash *hash, const void *key)
 {
-    uint32_t hv;
+    uint64_t hv;
     struct hash_bucket *bucket;
     bool ret;
 

@@ -185,19 +185,6 @@ copy_route_ipv6_option_list(struct route_ipv6_option_list *dest,
     dest->gc = a;
 }
 
-static const char *
-route_string(const struct route_ipv4 *r, struct gc_arena *gc)
-{
-    struct buffer out = alloc_buf_gc(256, gc);
-    buf_printf(&out, "ROUTE network %s netmask %s gateway %s", print_in_addr_t(r->network, 0, gc),
-               print_in_addr_t(r->netmask, 0, gc), print_in_addr_t(r->gateway, 0, gc));
-    if (r->flags & RT_METRIC_DEFINED)
-    {
-        buf_printf(&out, " metric %d", r->metric);
-    }
-    return BSTR(&out);
-}
-
 static bool
 is_route_parm_defined(const char *parm)
 {
@@ -680,7 +667,7 @@ init_route_list(struct route_list *rl, const struct route_option_list *opt,
 
     /* parse the routes from opt to rl */
     {
-        struct route_option *ro;
+        const struct route_option *ro;
         for (ro = opt->routes; ro; ro = ro->next)
         {
             struct addrinfo *netlist = NULL;
@@ -692,7 +679,7 @@ init_route_list(struct route_list *rl, const struct route_option_list *opt,
             }
             else
             {
-                struct addrinfo *curele;
+                const struct addrinfo *curele;
                 for (curele = netlist; curele; curele = curele->ai_next)
                 {
                     struct route_ipv4 *new;
@@ -812,7 +799,7 @@ init_route_ipv6_list(struct route_ipv6_list *rl6, const struct route_ipv6_option
     need_remote_ipv6_route = false;
 
     {
-        struct route_ipv6_option *ro6;
+        const struct route_ipv6_option *ro6;
         for (ro6 = opt6->routes_ipv6; ro6; ro6 = ro6->next)
         {
             struct route_ipv6 *r6;
@@ -1200,7 +1187,7 @@ delete_routes_v6(struct route_ipv6_list *rl6, const struct tuntap *tt, unsigned 
 {
     if (rl6 && (rl6->iflags & RL_ROUTES_ADDED))
     {
-        struct route_ipv6 *r6;
+        const struct route_ipv6 *r6;
         for (r6 = rl6->routes_ipv6; r6; r6 = r6->next)
         {
             delete_route_ipv6(r6, tt, es, ctx);
@@ -1239,7 +1226,7 @@ print_route_option(const struct route_option *ro, msglvl_t msglevel)
 void
 print_route_options(const struct route_option_list *rol, msglvl_t msglevel)
 {
-    struct route_option *ro;
+    const struct route_option *ro;
     if (rol->flags & RG_ENABLE)
     {
         msg(msglevel, "  [redirect_default_gateway local=%d]", (rol->flags & RG_LOCAL) != 0);
@@ -1325,27 +1312,6 @@ print_default_gateway(const msglvl_t msglevel, const struct route_gateway_info *
 #endif /* ifndef ENABLE_SMALL */
 
 static void
-print_route(const struct route_ipv4 *r, msglvl_t msglevel)
-{
-    struct gc_arena gc = gc_new();
-    if (r->flags & RT_DEFINED)
-    {
-        msg(msglevel, "%s", route_string(r, &gc));
-    }
-    gc_free(&gc);
-}
-
-void
-print_routes(const struct route_list *rl, msglvl_t msglevel)
-{
-    struct route_ipv4 *r;
-    for (r = rl->routes; r; r = r->next)
-    {
-        print_route(r, msglevel);
-    }
-}
-
-static void
 setenv_route(struct env_set *es, const struct route_ipv4 *r, int i)
 {
     struct gc_arena gc = gc_new();
@@ -1369,7 +1335,7 @@ void
 setenv_routes(struct env_set *es, const struct route_list *rl)
 {
     int i = 1;
-    struct route_ipv4 *r;
+    const struct route_ipv4 *r;
     for (r = rl->routes; r; r = r->next)
     {
         setenv_route(es, r, i++);
@@ -1406,7 +1372,7 @@ void
 setenv_routes_ipv6(struct env_set *es, const struct route_ipv6_list *rl6)
 {
     int i = 1;
-    struct route_ipv6 *r6;
+    const struct route_ipv6 *r6;
     for (r6 = rl6->routes_ipv6; r6; r6 = r6->next)
     {
         setenv_route_ipv6(es, r6, i++);
@@ -1780,7 +1746,7 @@ route_ipv6_clear_host_bits(struct route_ipv6 *r6)
         }
         else
         {
-            r6->network.s6_addr[byte--] &= (0xff << bits_to_clear);
+            r6->network.s6_addr[byte--] &= (uint8_t)(0xff << bits_to_clear);
             bits_to_clear = 0;
         }
     }
@@ -2457,7 +2423,7 @@ test_routes(const struct route_list *rl, const struct tuntap *tt)
          */
         if (rl && tt->did_ifconfig_setup)
         {
-            struct route_ipv4 *r;
+            const struct route_ipv4 *r;
             for (r = rl->routes, len = 0; r; r = r->next, ++len)
             {
                 test_route_helper(&ret, &count, &good, &ambig, adapters, r->gateway);
@@ -3144,7 +3110,8 @@ get_default_gateway(struct route_gateway_info *rgi, in_addr_t dest, openvpn_net_
     /* scan adapter list */
     if (rgi->flags & RGI_ADDR_DEFINED)
     {
-        struct ifreq *ifr, *ifend;
+        const struct ifreq *ifr;
+        const struct ifreq *ifend;
         in_addr_t addr, netmask;
         struct ifreq ifreq;
         struct ifconf ifc;

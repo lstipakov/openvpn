@@ -54,6 +54,7 @@
  */
 
 typedef uint16_t packet_size_type;
+#define PACKET_SIZE_MAX UINT16_MAX
 
 /* convert a packet_size_type from host to network order */
 #define htonps(x) htons(x)
@@ -197,6 +198,10 @@ struct link_socket
 #define LS_MODE_DEFAULT         0
 #define LS_MODE_TCP_LISTEN      1
 #define LS_MODE_TCP_ACCEPT_FROM 2
+/* Adopt the OOB server-probe socket, created and set up like a connection
+ * socket (bound unless --nobind), as the connection socket instead of creating
+ * one. */
+#define LS_MODE_UDP_ADOPT       3
     int mode;
 
     int resolve_retry_seconds;
@@ -207,7 +212,7 @@ struct link_socket
     int mtu; /* OS discovered MTU, or 0 if unknown */
 
 #define SF_USE_IP_PKTINFO    (1 << 0)
-#define SF_TCP_NODELAY       (1 << 1)
+#define SF_TCP_NODELAY       (1 << 1) /* unused: flag always enabled */
 #define SF_PORT_SHARE        (1 << 2)
 #define SF_HOST_RANDOMIZE    (1 << 3)
 #define SF_GETADDRINFO_DGRAM (1 << 4)
@@ -347,8 +352,15 @@ openvpn_bind(socket_descriptor_t sockfd, const struct sockaddr *addr, size_t add
 
 struct link_socket *link_socket_new(void);
 
-void socket_bind(socket_descriptor_t sd, struct addrinfo *local, int af_family, const char *prefix,
-                 bool ipv6only);
+/**
+ * Bind @p sd to the first @p af_family address of @p local. A failure is
+ * reported at @p msglevel, so a caller that can do without the bind passes a
+ * non-fatal level and checks the result.
+ *
+ * @return whether the socket was bound
+ */
+bool socket_bind(socket_descriptor_t sd, struct addrinfo *local, int af_family, const char *prefix,
+                 bool ipv6only, msglvl_t msglevel);
 
 int openvpn_connect(socket_descriptor_t sd, const struct sockaddr *remote, int connect_timeout,
                     volatile int *signal_received);
@@ -363,9 +375,21 @@ void link_socket_init_phase2(struct context *c, struct link_socket *sock);
 
 void do_preresolve(struct context *c);
 
+/**
+ * Look up a --preresolve result for hostname:servname. *ai then points into
+ * the cache, which owns it.
+ *
+ * @return 0 if found, -1 otherwise (like getaddrinfo)
+ */
+int get_cached_dns_entry(struct cached_dns_entry *dns_cache, const char *hostname,
+                         const char *servname, int ai_family, unsigned int resolve_flags,
+                         struct addrinfo **ai);
+
 void link_socket_close(struct link_socket *sock);
 
+#ifdef ENABLE_MANAGEMENT
 void sd_close(socket_descriptor_t *sd);
+#endif
 
 void bad_address_length(int actual, int expected);
 
@@ -390,8 +414,6 @@ void link_socket_bad_outgoing_addr(void);
 
 void setenv_trusted(struct env_set *es, const struct link_socket_info *info);
 
-bool link_socket_update_flags(struct link_socket *sock, unsigned int sockflags);
-
 void link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int sndbuf);
 
 /*
@@ -399,6 +421,28 @@ void link_socket_update_buffer_sizes(struct link_socket *sock, int rcvbuf, int s
  */
 
 socket_descriptor_t create_socket_tcp(struct addrinfo *);
+
+#ifdef TARGET_ANDROID
+/**
+ * Hand \p fd to the VPNService API as a protected socket, so its traffic is not
+ * routed back into a tunnel. \p addr is the intended peer; a local one is left
+ * unprotected.
+ */
+void protect_fd_nonlocal(int fd, const struct sockaddr *addr);
+#endif
+
+/**
+ * Create a UDP socket for @p af set up the way a link socket is: --sndbuf/--rcvbuf,
+ * --mark, --bind-dev and, when @p bind_addr is given, the local bind (IPV6_V6ONLY
+ * per @p bind_ipv6_only). Shared by create_socket() and the --server-probe sockets,
+ * so a probe socket is the connection socket it may become. With @p optional a
+ * socket the host cannot create or bind is not fatal, so --server-probe can skip
+ * that address family (SOCKET_UNDEFINED is returned).
+ */
+socket_descriptor_t create_socket_udp_configured(sa_family_t af, unsigned int sockflags,
+                                                 const struct socket_buffer_size *sbs, int mark,
+                                                 const char *bind_dev, struct addrinfo *bind_addr,
+                                                 bool bind_ipv6_only, bool optional);
 
 socket_descriptor_t socket_do_accept(socket_descriptor_t sd, struct link_socket_actual *act,
                                      const bool nowait);
@@ -459,7 +503,7 @@ socket_foreign_protocol_sd(const struct link_socket *sock)
 #endif /* if PORT_SHARE */
 
 static inline bool
-socket_connection_reset(const struct link_socket *sock, int status)
+socket_connection_reset(const struct link_socket *sock, ssize_t status)
 {
     if (link_socket_connection_oriented(sock))
     {
@@ -586,7 +630,7 @@ socket_is_dco_win(const struct link_socket *s)
  * Socket Read Routines
  */
 
-int link_socket_read_tcp(struct link_socket *sock, struct buffer *buf);
+ssize_t link_socket_read_tcp(struct link_socket *sock, struct buffer *buf);
 
 #ifdef _WIN32
 
@@ -606,20 +650,20 @@ link_socket_read_udp_win32(struct link_socket *sock, struct buffer *buf,
 
 #else  /* ifdef _WIN32 */
 
-int link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
-                               struct link_socket_actual *from);
+ssize_t link_socket_read_udp_posix(struct link_socket *sock, struct buffer *buf,
+                                   struct link_socket_actual *from);
 
 #endif /* ifdef _WIN32 */
 
 /* read a TCP or UDP packet from link */
-static inline int
+static inline ssize_t
 link_socket_read(struct link_socket *sock, struct buffer *buf, struct link_socket_actual *from)
 {
     if (proto_is_udp(sock->info.proto) || socket_is_dco_win(sock))
     /* unified UDPv4 and UDPv6, for DCO-WIN the kernel
      * will strip the length header */
     {
-        int res;
+        ssize_t res;
 
 #ifdef _WIN32
         res = link_socket_read_udp_win32(sock, buf, from);
@@ -708,14 +752,14 @@ link_socket_write_udp_posix(struct link_socket *sock, struct buffer *buf,
     }
     else
 #endif
-        return sendto(sock->sd, BPTR(buf), BLENZ(buf), 0, (struct sockaddr *)&to->dest.addr.sa,
+        return sendto(sock->sd, CBPTR(buf), BLENZ(buf), 0, (struct sockaddr *)&to->dest.addr.sa,
                       (socklen_t)af_addr_size(to->dest.addr.sa.sa_family));
 }
 
 static inline ssize_t
 link_socket_write_tcp_posix(struct link_socket *sock, struct buffer *buf)
 {
-    return send(sock->sd, BPTR(buf), BLENZ(buf), MSG_NOSIGNAL);
+    return send(sock->sd, CBPTR(buf), BLENZ(buf), MSG_NOSIGNAL);
 }
 
 #endif /* ifdef _WIN32 */
@@ -760,7 +804,7 @@ link_socket_extract_tos(struct link_socket *sock, const struct buffer *ipbuf)
 {
     if (sock && ipbuf)
     {
-        struct openvpn_iphdr *iph = (struct openvpn_iphdr *)BPTR(ipbuf);
+        const struct openvpn_iphdr *iph = (const struct openvpn_iphdr *)CBPTR(ipbuf);
         sock->ptos = iph->tos;
         sock->ptos_defined = true;
     }

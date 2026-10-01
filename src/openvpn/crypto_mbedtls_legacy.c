@@ -139,14 +139,6 @@ mbed_log_func_line(unsigned int flags, int errval, const char *func, int line)
 }
 
 
-#ifdef DMALLOC
-void
-crypto_init_dmalloc(void)
-{
-    msg(M_ERR, "Error: dmalloc support is not available for mbed TLS.");
-}
-#endif /* DMALLOC */
-
 const cipher_name_pair cipher_name_translation_table[] = {
     { "BF-CBC", "BLOWFISH-CBC" },
     { "BF-CFB", "BLOWFISH-CFB64" },
@@ -257,7 +249,7 @@ crypto_pem_encode(const char *name, struct buffer *dst, const struct buffer *src
 
     size_t out_len = 0;
     if (MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL
-        != mbedtls_pem_write_buffer(header, footer, BPTR(src), BLEN(src), NULL, 0, &out_len))
+        != mbedtls_pem_write_buffer(header, footer, CBPTR(src), BLEN(src), NULL, 0, &out_len))
     {
         return false;
     }
@@ -265,7 +257,7 @@ crypto_pem_encode(const char *name, struct buffer *dst, const struct buffer *src
     /* We set the size buf to out_len-1 to NOT include the 0 byte that
      * mbedtls_pem_write_buffer in its length calculation */
     *dst = alloc_buf_gc(out_len, gc);
-    if (!mbed_ok(mbedtls_pem_write_buffer(header, footer, BPTR(src), BLEN(src), BPTR(dst),
+    if (!mbed_ok(mbedtls_pem_write_buffer(header, footer, CBPTR(src), BLEN(src), BPTR(dst),
                                           BCAP(dst), &out_len))
         || !buf_inc_len(dst, out_len - 1))
     {
@@ -692,7 +684,7 @@ cipher_ctx_update_ad(cipher_ctx_t *ctx, const uint8_t *src, int src_len)
 }
 
 int
-cipher_ctx_update(mbedtls_cipher_context_t *ctx, uint8_t *dst, int *dst_len, uint8_t *src,
+cipher_ctx_update(mbedtls_cipher_context_t *ctx, uint8_t *dst, int *dst_len, const uint8_t *src,
                   int src_len)
 {
     size_t s_dst_len = *dst_len;

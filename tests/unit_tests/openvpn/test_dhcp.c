@@ -55,8 +55,8 @@ test_write_dhcp_search_str(void **state)
 {
     struct gc_arena gc = gc_new();
     struct buffer out_buf = alloc_buf_gc(512, &gc);
-    struct buffer clear_buf = alloc_buf_gc(512, &gc);
-    buf_clear(&clear_buf);
+    struct buffer clean_buf = alloc_buf_gc(512, &gc);
+    buf_clear(&clean_buf);
     bool error = false;
 
 #define LONGDOMAIN "a-reaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaally-long-domain"
@@ -79,7 +79,7 @@ test_write_dhcp_search_str(void **state)
     struct buffer small_buf = alloc_buf_gc(sizeof(output_1) - 1, &gc);
     buf_clear(&small_buf);
     write_dhcp_search_str(&small_buf, DHCP_DOMAIN_SEARCH, search_list, 2, &error);
-    assert_memory_equal(BPTR(&small_buf), BPTR(&clear_buf), buf_forward_capacity_total(&small_buf));
+    assert_memory_equal(BPTR(&small_buf), BPTR(&clean_buf), buf_forward_capacity_total(&small_buf));
     assert_true(error);
     error = false;
 
@@ -103,13 +103,13 @@ test_write_dhcp_search_str(void **state)
 
     buf_clear(&out_buf);
     write_dhcp_search_str(&out_buf, DHCP_DOMAIN_SEARCH, search_list + 5, 1, &error);
-    assert_memory_equal(BPTR(&out_buf), BPTR(&clear_buf), buf_forward_capacity_total(&clear_buf));
+    assert_memory_equal(BPTR(&out_buf), BPTR(&clean_buf), buf_forward_capacity_total(&clean_buf));
     assert_true(error);
     error = false;
 
     buf_clear(&out_buf);
     write_dhcp_search_str(&out_buf, DHCP_DOMAIN_SEARCH, search_list, 3, &error);
-    assert_memory_equal(BPTR(&out_buf), BPTR(&clear_buf), buf_forward_capacity_total(&clear_buf));
+    assert_memory_equal(BPTR(&out_buf), BPTR(&clean_buf), buf_forward_capacity_total(&clean_buf));
     assert_true(error);
     error = false;
 
@@ -119,6 +119,24 @@ test_write_dhcp_search_str(void **state)
     write_dhcp_search_str(&out_buf, DHCP_DOMAIN_SEARCH, search_list + 6, 1, &error);
     assert_memory_equal(BPTR(&out_buf), output_5, sizeof(output_5));
     assert_false(error);
+
+    /* Several entries whose accumulated length lands exactly on the guard
+     * boundary. Each entry consumes strlen()+2 bytes of tmp_buf (one length
+     * prefix plus one trailing NUL), but the guard only accounts for
+     * strlen()+1, so the last entry writes one byte past tmp_buf[256].
+     * Sizes: 4 x 50 leaves len == 208, the final 47 makes
+     * 47 + 208 + 1 == 256, which the guard still accepts. */
+#define D50 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+#define D47 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    const char *overflow_list[] = { D50, D50, D50, D50, D47 };
+    assert_int_equal(strlen(D50), 50);
+    assert_int_equal(strlen(D47), 47);
+    buf_clear(&out_buf);
+    write_dhcp_search_str(&out_buf, DHCP_DOMAIN_SEARCH, overflow_list, 5, &error);
+    /* total is 257 > 255, so the option must be rejected -- the point of this
+     * case is that tmp_buf must not be written out of bounds on the way. */
+    assert_true(error);
+    error = false;
 
     gc_free(&gc);
 }

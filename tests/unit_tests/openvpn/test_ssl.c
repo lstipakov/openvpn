@@ -48,7 +48,9 @@
 #include "buffer.h"
 #include "cert_data.h"
 #include "packet_id.h"
+#include "ssl_util.h"
 #include "ssl_verify.h"
+#include "openvpn.h"
 
 /* Mock function to be allowed to include win32.c which is required for
  * getting the temp directory */
@@ -115,19 +117,6 @@ static const char *const unittest_key =
     "-----END PRIVATE KEY-----\n";
 
 
-static const char *
-get_tmp_dir(void)
-{
-    const char *ret;
-#ifdef _WIN32
-    ret = win_get_tempdir();
-#else
-    ret = "/tmp";
-#endif
-    assert_non_null(ret);
-    return ret;
-}
-
 static struct
 {
     struct gc_arena gc;
@@ -140,8 +129,8 @@ init(void **state)
 {
     (void)state;
     global_state.gc = gc_new();
-    global_state.certfile = platform_create_temp_file(get_tmp_dir(), "cert", &global_state.gc);
-    global_state.keyfile = platform_create_temp_file(get_tmp_dir(), "key", &global_state.gc);
+    global_state.certfile = platform_create_temp_file(platform_get_tmp_dir(), "cert", &global_state.gc);
+    global_state.keyfile = platform_create_temp_file(platform_get_tmp_dir(), "key", &global_state.gc);
 
     int certfd = open(global_state.certfile, O_RDWR);
     int keyfd = open(global_state.keyfile, O_RDWR);
@@ -175,7 +164,7 @@ crypto_pem_encode_certificate(void **state)
     struct gc_arena gc = gc_new();
 
     struct tls_root_ctx ctx = { 0 };
-    tls_ctx_client_new(&ctx);
+    tls_ctx_new(&ctx);
     tls_ctx_load_cert_file(&ctx, unittest_cert, true);
 
     openvpn_x509_cert_t *cert = NULL;
@@ -188,7 +177,7 @@ crypto_pem_encode_certificate(void **state)
     cert = ctx.crt_chain;
 #endif
 
-    const char *tmpfile = platform_create_temp_file(get_tmp_dir(), "ut_pem", &gc);
+    const char *tmpfile = platform_create_temp_file(platform_get_tmp_dir(), "ut_pem", &gc);
     backend_x509_write_pem(cert, tmpfile);
 
     struct buffer exported_pem = buffer_read_from_file(tmpfile, &gc);
@@ -208,13 +197,13 @@ test_load_certificate_and_key(void **state)
     /* test loading of inlined cert and key.
      * loading the key also checks that it matches the loaded certificate
      */
-    tls_ctx_client_new(&ctx);
+    tls_ctx_new(&ctx);
     tls_ctx_load_cert_file(&ctx, unittest_cert, true);
     assert_int_equal(tls_ctx_load_priv_file(&ctx, unittest_key, true), 0);
     tls_ctx_free(&ctx);
 
     /* test loading of cert and key from file */
-    tls_ctx_client_new(&ctx);
+    tls_ctx_new(&ctx);
     tls_ctx_load_cert_file(&ctx, global_state.certfile, false);
     assert_int_equal(tls_ctx_load_priv_file(&ctx, global_state.keyfile, false), 0);
     tls_ctx_free(&ctx);
@@ -228,7 +217,7 @@ test_load_certificate_and_key_uri(void **state)
 
 #if !defined(HAVE_OPENSSL_STORE)
     skip();
-#else  /* HAVE_OPENSSL_STORE */
+#else /* HAVE_OPENSSL_STORE */
 
     struct tls_root_ctx ctx = { 0 };
     const char *certfile = global_state.certfile;
@@ -239,9 +228,10 @@ test_load_certificate_and_key_uri(void **state)
     struct buffer keyuri = alloc_buf_gc(6 + strlen(keyfile) + 1, gc);   /* 6 bytes for "file:/" */
 
     /* Windows temp file path starts with drive letter -- add a leading slash for URI */
-    const char *lead = "";
 #ifdef _WIN32
-    lead = "/";
+    const char *lead = "/";
+#else
+    const char *lead = "";
 #endif /* _WIN32 */
     assert_true(buf_printf(&certuri, "file:%s%s", lead, certfile));
     assert_true(buf_printf(&keyuri, "file:%s%s", lead, keyfile));
@@ -252,7 +242,7 @@ test_load_certificate_and_key_uri(void **state)
     string_mod(BSTR(&keyuri), CC_ANY, CC_BACKSLASH, '/');
 #endif /* _WIN32 */
 
-    tls_ctx_client_new(&ctx);
+    tls_ctx_new(&ctx);
     tls_ctx_load_cert_file(&ctx, BSTR(&certuri), false);
     assert_int_equal(tls_ctx_load_priv_file(&ctx, BSTR(&keyuri), false), 0);
     tls_ctx_free(&ctx);
@@ -303,8 +293,6 @@ do_data_channel_round_trip(struct crypto_options *co)
     struct buffer work = alloc_buf_gc(BUF_SIZE(&frame), &gc);
     struct buffer encrypt_workspace = alloc_buf_gc(BUF_SIZE(&frame), &gc);
     struct buffer decrypt_workspace = alloc_buf_gc(BUF_SIZE(&frame), &gc);
-    struct buffer buf = clear_buf();
-    void *buf_p;
 
     /* init work */
     ASSERT(buf_init(&work, frame.buf.headroom));
@@ -322,11 +310,11 @@ do_data_channel_round_trip(struct crypto_options *co)
         ASSERT(buf_init(&src, 0));
         ASSERT(i <= src.capacity);
         src.len = i;
-        ASSERT(rand_bytes(BPTR(&src), BLEN(&src)));
+        prng_bytes(BPTR(&src), BLEN(&src));
 
         /* copy source to input buf */
-        buf = work;
-        buf_p = buf_write_alloc(&buf, BLENZ(&src));
+        struct buffer buf = work;
+        void *buf_p = buf_write_alloc(&buf, BLENZ(&src));
         ASSERT(buf_p);
         memcpy(buf_p, BPTR(&src), BLENZ(&src));
 
@@ -356,7 +344,6 @@ encrypt_one_packet(struct crypto_options *co, int len)
     struct buffer encrypt_workspace = alloc_buf_gc(BUF_SIZE(&frame), &gc);
     struct buffer decrypt_workspace = alloc_buf_gc(BUF_SIZE(&frame), &gc);
     struct buffer work = alloc_buf_gc(BUF_SIZE(&frame), &gc);
-    struct buffer buf = clear_buf();
     struct buffer src = alloc_buf_gc(frame.buf.payload_size, &gc);
     void *buf_p;
 
@@ -368,10 +355,10 @@ encrypt_one_packet(struct crypto_options *co, int len)
     ASSERT(buf_init(&src, 0));
     ASSERT(len <= src.capacity);
     src.len = len;
-    ASSERT(rand_bytes(BPTR(&src), BLEN(&src)));
+    prng_bytes(BPTR(&src), BLEN(&src));
 
     /* copy source to input buf */
-    buf = work;
+    struct buffer buf = work;
     buf_p = buf_write_alloc(&buf, BLENZ(&src));
     ASSERT(buf_p);
     memcpy(buf_p, BPTR(&src), BLENZ(&src));
@@ -453,10 +440,10 @@ init_crypto_options(const char *cipher, const char *auth, bool epoch, struct key
     }
     else
     {
-        ASSERT(rand_bytes(key2.keys[0].cipher, sizeof(key2.keys[0].cipher)));
-        ASSERT(rand_bytes(key2.keys[0].hmac, sizeof(key2.keys[0].hmac)));
-        ASSERT(rand_bytes(key2.keys[1].cipher, sizeof(key2.keys[1].cipher)));
-        ASSERT(rand_bytes(key2.keys[1].hmac, sizeof(key2.keys)[1].hmac));
+        prng_bytes(key2.keys[0].cipher, sizeof(key2.keys[0].cipher));
+        prng_bytes(key2.keys[0].hmac, sizeof(key2.keys[0].hmac));
+        prng_bytes(key2.keys[1].cipher, sizeof(key2.keys[1].cipher));
+        prng_bytes(key2.keys[1].hmac, sizeof(key2.keys)[1].hmac);
     }
 
     struct crypto_options co = { 0 };
@@ -652,7 +639,6 @@ test_data_channel_known_vectors_run(bool epoch)
     struct buffer work = alloc_buf_gc(BUF_SIZE(&frame), &gc);
     struct buffer encrypt_workspace = alloc_buf_gc(BUF_SIZE(&frame), &gc);
     struct buffer decrypt_workspace = alloc_buf_gc(BUF_SIZE(&frame), &gc);
-    struct buffer buf = clear_buf();
     void *buf_p;
 
     /* init work */
@@ -669,7 +655,7 @@ test_data_channel_known_vectors_run(bool epoch)
     ASSERT(buf_write(&src, plaintext, strlen(plaintext)));
 
     /* copy source to input buf */
-    buf = work;
+    struct buffer buf = work;
     buf_p = buf_write_alloc(&buf, BLENZ(&src));
     ASSERT(buf_p);
     memcpy(buf_p, BPTR(&src), BLENZ(&src));
@@ -687,7 +673,7 @@ test_data_channel_known_vectors_run(bool epoch)
     openvpn_encrypt(&buf, encrypt_workspace, &co);
 
     /* separate buffer in authenticated data and encrypted data */
-    uint8_t *ad_start = BPTR(&buf);
+    const uint8_t *ad_start = BPTR(&buf);
     buf_advance(&buf, 4);
 
     if (epoch)
@@ -775,7 +761,7 @@ free_certificate(openvpn_x509_cert_t *cert)
 static openvpn_x509_cert_t *
 get_certificate(const char *cert_str)
 {
-    BIO *in = BIO_new_mem_buf((char *)cert1, -1);
+    BIO *in = BIO_new_mem_buf((char *)cert_str, -1);
     assert_non_null(in);
     X509 *cert = PEM_read_bio_X509(in, NULL, NULL, NULL);
     assert_non_null(cert);
@@ -790,10 +776,37 @@ free_certificate(openvpn_x509_cert_t *cert)
 }
 #endif
 
+/* Generated with:
+ * openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -keyout - -noenc -sha256 -days 3650 \
+ * -subj '/CN=ovpn-test-secp384r1/O=OpenVPN Unit Test Example Corp./OU=Cert Details Dept.'
+ * -addext 'subjectAltName=DNS:unittest.example.com' -addext 'extendedKeyUsage=clientAuth' */
+static const char *cert_details_test_cert =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIICkzCCAhqgAwIBAgIUKDsZM+PApGdaD2QF9iYaxoFJAkowCgYIKoZIzj0EAwIw\n"
+    "ZTEcMBoGA1UEAwwTb3Zwbi10ZXN0LXNlY3AzODRyMTEoMCYGA1UECgwfT3BlblZQ\n"
+    "TiBVbml0IFRlc3QgRXhhbXBsZSBDb3JwLjEbMBkGA1UECwwSQ2VydCBEZXRhaWxz\n"
+    "IERlcHQuMB4XDTI2MDcwNzEwNTIxNloXDTM2MDcwNDEwNTIxNlowZTEcMBoGA1UE\n"
+    "AwwTb3Zwbi10ZXN0LXNlY3AzODRyMTEoMCYGA1UECgwfT3BlblZQTiBVbml0IFRl\n"
+    "c3QgRXhhbXBsZSBDb3JwLjEbMBkGA1UECwwSQ2VydCBEZXRhaWxzIERlcHQuMHYw\n"
+    "EAYHKoZIzj0CAQYFK4EEACIDYgAEOlKoQVk+wbBD6V/6kg+/oHfqF0Dq08LlCL+B\n"
+    "om4RhutG99QDrow251Ps+Ds/7LQYYRA8+hHyEFrmGM+j2o6KhS5K2uA6dIZL4zLK\n"
+    "vl0NeF2M61Z8tt/IjrFZd+CrEANco4GKMIGHMB0GA1UdDgQWBBSEyG6m+QdWazeg\n"
+    "0CHN7q0edJlqMjAfBgNVHSMEGDAWgBSEyG6m+QdWazeg0CHN7q0edJlqMjAPBgNV\n"
+    "HRMBAf8EBTADAQH/MB8GA1UdEQQYMBaCFHVuaXR0ZXN0LmV4YW1wbGUuY29tMBMG\n"
+    "A1UdJQQMMAoGCCsGAQUFBwMCMAoGCCqGSM49BAMCA2cAMGQCMCyK7aQcyKGW8BWQ\n"
+    "UOYqbJUJZJcviP6ACgJRzK6pgkqt9gY0E0Tb00Qh6D5dBV5i3wIwCMhSgpVJxDrc\n"
+    "pRfligoK8bmv4HEgnV6BDeoDYd41WVMpE9u1issQDHY0SnWC7d9q\n"
+    "-----END CERTIFICATE-----\n";
+const char *const cert_details_cname = "ovpn-test-secp384r1";
+const char *const cert_details_org = "OpenVPN Unit Test Example Corp.";
+const char *const cert_details_org_unit = "Cert Details Dept.";
+const char *const cert_details_serial_number = "229677570263950905252266749734450551528150860362";
+const char *const cert_details_serial_number_hex = "0x283B1933E3C0A4675A0F6405F6261AC68149024A";
+
 void
 crypto_test_print_cert_details(void **state)
 {
-    openvpn_x509_cert_t *cert = get_certificate(cert1);
+    openvpn_x509_cert_t *cert = get_certificate(cert_details_test_cert);
     struct gc_arena gc = gc_new();
 
     const char *fp = backend_x509_get_serial_hex(cert, &gc);
@@ -801,34 +814,275 @@ crypto_test_print_cert_details(void **state)
     /* we messed this up between TLS libraries. But let's at least notice in
      * the future ...*/
 #if defined(ENABLE_CRYPTO_MBEDTLS)
-    assert_string_equal(fp, "82:6B:DD:CC:BD:E5:5E:B7:08:F1:2D:68:00:3C:24:DE");
+    assert_string_equal(fp, "28:3B:19:33:E3:C0:A4:67:5A:0F:64:05:F6:26:1A:C6:81:49:02:4A");
 #else
-    assert_string_equal(fp, "82:6b:dd:cc:bd:e5:5e:b7:08:f1:2d:68:00:3c:24:de");
+    assert_string_equal(fp, "28:3b:19:33:e3:c0:a4:67:5a:0f:64:05:f6:26:1a:c6:81:49:02:4a");
 #endif
 
     const char *sn = backend_x509_get_serial(cert, &gc);
-    assert_string_equal(sn, "173359713849739808110610111821055272158");
+    assert_string_equal(sn, cert_details_serial_number);
 
     char username[TLS_USERNAME_LEN + 1] = { 0 }; /* null-terminated */
 
-    int ret = backend_x509_get_username(username, sizeof(username), "CN",
-                                        cert);
+    int ret = backend_x509_get_username(username, sizeof(username), "CN", cert);
 
-    assert_string_equal(username, "ovpn-test-ec1");
+    assert_string_equal(username, cert_details_cname);
     assert_int_equal(ret, SUCCESS);
 
-#ifndef ENABLE_CRYPTO_MBEDTLS
-    /* mbed TLS does not implement this */
-    ret = backend_x509_get_username(username, sizeof(username), "serialNumber",
-                                    cert);
+    ret = backend_x509_get_username(username, sizeof(username), "serialNumber", cert);
     assert_int_equal(ret, SUCCESS);
-    assert_string_equal(username, "0x826BDDCCBDE55EB708F12D68003C24DE");
-#endif
+    assert_string_equal(username, cert_details_serial_number_hex);
+
+    ret = backend_x509_get_username(username, sizeof(username), "O", cert);
+
+    assert_string_equal(username, cert_details_org);
+    assert_int_equal(ret, SUCCESS);
+
+    ret = backend_x509_get_username(username, sizeof(username), "OU", cert);
+
+    assert_string_equal(username, cert_details_org_unit);
+    assert_int_equal(ret, SUCCESS);
+
+    /* Check that FAILURE is returned if a field does not exist. */
+    ret = backend_x509_get_username(username, sizeof(username), "SN", cert);
+    assert_int_equal(ret, FAILURE);
+
+    /* Check that FAILURE is returned for invalid field names. */
+    ret = backend_x509_get_username(username, sizeof(username), "invalidField", cert);
+    assert_int_equal(ret, FAILURE);
+
+    /* Check that FAILURE is returned if the output buffer is too small. Do this separately
+     * for a subject field and for the serial number, because these are different code paths.
+     *
+     * First case: Can't fit all characters. */
+    ret = backend_x509_get_username(username, strlen(cert_details_cname) / 2, "CN", cert);
+    assert_int_equal(ret, FAILURE);
+    ret = backend_x509_get_username(username, strlen(cert_details_serial_number_hex) / 2, "serialNumber", cert);
+    assert_int_equal(ret, FAILURE);
+
+    /* Second case: Can fit the characters but not the terminating '\0'. */
+    ret = backend_x509_get_username(username, strlen(cert_details_cname), "CN", cert);
+    assert_int_equal(ret, FAILURE);
+    ret = backend_x509_get_username(username, strlen(cert_details_serial_number_hex), "serialNumber", cert);
+    assert_int_equal(ret, FAILURE);
 
     gc_free(&gc);
     free_certificate(cert);
 }
 
+/* Certificate with two CNs, "foo" and "bar".
+ *
+ * Generated with:
+ * openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:secp384r1 -subj "/CN=foo/CN=bar" \
+ * -noenc -out two_cns.crt -keyout two_cns.key
+ */
+static const char *cert_with_two_cns =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIByTCCAVCgAwIBAgIUZuvd8Wfnq5jeRc3ohoJ/Vza54wQwCgYIKoZIzj0EAwIw\n"
+    "HDEMMAoGA1UEAwwDZm9vMQwwCgYDVQQDDANiYXIwHhcNMjYwODI4MTU1NjAwWhcN\n"
+    "MjYwOTI3MTU1NjAwWjAcMQwwCgYDVQQDDANmb28xDDAKBgNVBAMMA2JhcjB2MBAG\n"
+    "ByqGSM49AgEGBSuBBAAiA2IABERAfb210NOACy+QVYAu3EXrcGhTJpZDfhpDnE/h\n"
+    "PvPMWGWzqecTYdseArxZc0T/5Xma36IKCjGGsgN9ypZ5oQugQlB/NrVRCJIuHSGA\n"
+    "hGBWFvnUsqdNo765lGwVdBwhY6NTMFEwHQYDVR0OBBYEFPwnD+wK9R81Syk0qyTI\n"
+    "dFT/BNoJMB8GA1UdIwQYMBaAFPwnD+wK9R81Syk0qyTIdFT/BNoJMA8GA1UdEwEB\n"
+    "/wQFMAMBAf8wCgYIKoZIzj0EAwIDZwAwZAIwGxazGb6RRQtXzOWCPLRKId4e+E88\n"
+    "cwoCK3UwzEr8+Ddf54w5cEZC54f5J6AKFUJjAjBpT/JqF41uK57H+8i/16oZkBcm\n"
+    "OyQnlH8W/UzZo3/weTEBTcNW0iuCpIrS6im8pSk=\n"
+    "-----END CERTIFICATE-----\n";
+
+void
+ssl_test_extract_last_matching_field(void **state)
+{
+    /* When there are multiple fields of the same type in the certificate's subject, OpenVPN
+     * should extract the value of the last matching field. This is essentially arbitrary and there
+     * is no correct choice here, but this test exists to make sure that the behavior is consistent
+     * between different backends.
+     */
+    openvpn_x509_cert_t *cert = get_certificate(cert_with_two_cns);
+
+    char username[TLS_USERNAME_LEN + 1] = { 0 };
+    assert_int_equal(backend_x509_get_username(username, sizeof(username), "CN", cert), SUCCESS);
+    assert_string_equal(username, "bar");
+    free_certificate(cert);
+}
+
+/* Certificate with a null-byte embedded in the CN.
+ *
+ * Generated with the following Python script:
+ *
+ * from cryptography import x509
+ * from cryptography.x509.oid import NameOID, ExtensionOID, ExtendedKeyUsageOID
+ * from cryptography.hazmat.primitives import hashes, serialization
+ * from cryptography.hazmat.primitives.asymmetric import ec
+ * import datetime
+ *
+ * private_key = ec.generate_private_key(ec.SECP384R1())
+ * now = datetime.datetime.now(datetime.timezone.utc)
+ * name = "with\x00null"
+ *
+ * cert = (x509.CertificateBuilder()
+ *             .subject_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+ *             .issuer_name(x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, name)]))
+ *             .public_key(private_key.public_key())
+ *             .serial_number(x509.random_serial_number())
+ *             .not_valid_before(now)
+ *             .not_valid_after(now + datetime.timedelta(days=10 * 365))
+ *             .sign(private_key, hashes.SHA256()))
+ *
+ * print(str(cert.public_bytes(serialization.Encoding.PEM), encoding='utf-8'))
+ **/
+static const char *cert_with_null =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBZTCB66ADAgECAhRLWdNRl+C20KKBG4QC9HFPWlOtBzAKBggqhkjOPQQDAjAU\n"
+    "MRIwEAYDVQQDDAl3aXRoAG51bGwwHhcNMjYwODI4MTQzMDA4WhcNMzYwODI1MTQz\n"
+    "MDA4WjAUMRIwEAYDVQQDDAl3aXRoAG51bGwwdjAQBgcqhkjOPQIBBgUrgQQAIgNi\n"
+    "AAT7PE+vJCBiB4CVHBcvJVF9n5n/dGQIn4C8HeYE8M2iXYCIRW5wg6/mlPaeiJY/\n"
+    "Ywh3pa8zhto1+aczbJKTvLgRwXn6N5vNpME1c5iWMzY0WHe1dJyVtoRBvkNvy5+k\n"
+    "GuEwCgYIKoZIzj0EAwIDaQAwZgIxAP2ekdQ8muG8Nv2o3PsBp0CqiaSNByGiP75i\n"
+    "k099bUFvHp/3LSp8Wf4JK2iWzc5h6gIxAINBGg2xjlmMgpXxROKA9qQqaM3d92Mp\n"
+    "EzZyRyPM3PGR83ZPbIaYDq8lCVxVlbYr/Q==\n"
+    "-----END CERTIFICATE-----\n";
+
+void
+ssl_test_reject_null_in_cert_subject(void **state)
+{
+    openvpn_x509_cert_t *cert = get_certificate(cert_with_null);
+    struct gc_arena gc = gc_new();
+
+    /* Trying to get the subject as a whole should fail. */
+    assert_ptr_equal(x509_get_subject(cert, &gc), NULL);
+
+    /* Trying to extract the common name should fail. */
+    char username[TLS_USERNAME_LEN + 1] = { 0 };
+    assert_int_equal(backend_x509_get_username(username, sizeof(username), "CN", cert), FAILURE);
+    gc_free(&gc);
+    free_certificate(cert);
+}
+
+/* Cert with CN="name, O=InjectedOrg" and O=RealOrg.
+ *
+ * Generated with the following Python script:
+ *
+ * from cryptography import x509
+ * from cryptography.x509.oid import NameOID, ExtensionOID, ExtendedKeyUsageOID
+ * from cryptography.hazmat.primitives import hashes, serialization
+ * from cryptography.hazmat.primitives.asymmetric import ec
+ * import datetime
+ *
+ * private_key = ec.generate_private_key(ec.SECP384R1())
+ * now = datetime.datetime.now(datetime.timezone.utc)
+ * name = "name, O=InjectedOrg"
+ * org = "RealOrg"
+ *
+ * distinguished_name = x509.Name([
+ *     x509.NameAttribute(NameOID.COMMON_NAME, name),
+ *     x509.NameAttribute(NameOID.ORGANIZATION_NAME, org)
+ * ])
+ *
+ * cert = (x509.CertificateBuilder()
+ *             .subject_name(distinguished_name)
+ *             .issuer_name(distinguished_name)
+ *             .public_key(private_key.public_key())
+ *             .serial_number(x509.random_serial_number())
+ *             .not_valid_before(now)
+ *             .not_valid_after(now + datetime.timedelta(days=10 * 365))
+ *             .sign(private_key, hashes.SHA256()))
+ *
+ * print(str(cert.public_bytes(serialization.Encoding.PEM), encoding='utf-8'))
+ */
+static const char *cert_with_rfc_2253_chars =
+    "-----BEGIN CERTIFICATE-----\n"
+    "MIIBnTCCASOgAwIBAgIUR1IGc6A800U14v/ykZNR21aVubowCgYIKoZIzj0EAwIw\n"
+    "MDEcMBoGA1UEAwwTbmFtZSwgTz1JbmplY3RlZE9yZzEQMA4GA1UECgwHUmVhbE9y\n"
+    "ZzAeFw0yNjA4MjgxNTQ3NDdaFw0zNjA4MjUxNTQ3NDdaMDAxHDAaBgNVBAMME25h\n"
+    "bWUsIE89SW5qZWN0ZWRPcmcxEDAOBgNVBAoMB1JlYWxPcmcwdjAQBgcqhkjOPQIB\n"
+    "BgUrgQQAIgNiAAR6zl9QPAbAnHWN//MRdowuhu0Sol6N+lqB/qk+D+2NHCd/t4H9\n"
+    "cJlswUh6EPsmLxgfMYgO2QwClFWEFWvtXQs8BggoidY6i9pmAPhs8+9fmIyuNVpG\n"
+    "3vUWZrUBRgylwaIwCgYIKoZIzj0EAwIDaAAwZQIwKzXmR8YPQZ1pratM9meVmGkH\n"
+    "1rpHgV3U8oeg+jXmfVcZJTpDeDz4yBl4V3KBKT7HAjEAj2qkaTz7fiSwBKsxJQWH\n"
+    "dQFPBCAYU9zZJvlNnEPtmHIwaD/qHXDeClr/HRItU3B9\n"
+    "-----END CERTIFICATE-----\n";
+
+void
+ssl_test_escape_rfc_2253_chars_in_subject(void **state)
+{
+    openvpn_x509_cert_t *cert = get_certificate(cert_with_rfc_2253_chars);
+    struct gc_arena gc = gc_new();
+
+    char *subject = x509_get_subject(cert, &gc);
+    assert_non_null(subject);
+
+    /* Mbed TLS escapes the '=' character but OpenSSL does not. */
+    const char *expected_subject_openssl = "CN=name\\, O=InjectedOrg, O=RealOrg";
+    const char *expected_subject_mbedtls = "CN=name\\, O\\=InjectedOrg, O=RealOrg";
+
+    assert_true(strcmp(subject, expected_subject_openssl) == 0 || strcmp(subject, expected_subject_mbedtls) == 0);
+    gc_free(&gc);
+    free_certificate(cert);
+}
+
+void
+ssl_test_extract_peer_info(void **state)
+{
+    const char *peer_info_normal =
+        "IV_VER=2.6_git\nIV_PLAT=mac\nIV_TCPNL=1\nIV_NCP=2\n"
+        "IV_CIPHERS=AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305\n"
+        "IV_PROTO=94\nIV_LZO_STUB=1\nIV_COMP_STUB=1\nP=78\nIV_COMP_STUBv2=1\n"
+        "IV_SSL=OpenSSL_3.0.5_5_Jul_2022\nIV_LZ4v2=1";
+
+    const char *empty = "";
+    const char *invalid_proto = "IV_PROTO=seven\nIV_SSL=7\nP=300\nID=xyz";
+    const char *test_prefix = "UV_IV_PROTO=773\nNP=112\nPD=8\n";
+
+
+    assert_int_equal(extract_iv_proto(peer_info_normal), 94);
+    assert_int_equal(extract_iv_proto(empty), 0);
+    assert_int_equal(extract_iv_proto(invalid_proto), 0);
+    /* This should not pick up the UV_IV_PROTO that has the extra prefix */
+    assert_int_equal(extract_iv_proto(test_prefix), 0);
+
+    assert_int_equal(peer_info_extract_uint(peer_info_normal, "IV_COMP_STUB="), 1);
+    assert_int_equal(peer_info_extract_int(empty, "IV_COMP_STUB=", "%d", 0xfe0d0d), 0xfe0d0d);
+    assert_int_equal(peer_info_extract_uint(invalid_proto, "IV_COMP_STUB="), 0);
+
+    assert_int_equal(peer_info_extract_int(test_prefix, "NP=", "%d", 23), 112);
+    assert_int_equal(peer_info_extract_uint(test_prefix, "PD="), 8);
+    assert_int_equal(peer_info_extract_int(test_prefix, "P=", "%x", 0xfe0d0d), 0xfe0d0d);
+    assert_int_equal(peer_info_extract_uint(peer_info_normal, "P="), 78);
+    assert_int_equal(peer_info_extract_uint(test_prefix, "UV_IV_PROTO="), 773);
+
+    struct gc_arena gc = gc_new();
+
+    const char *peer_ciphers = extract_var_peer_info(peer_info_normal, "IV_CIPHERS=", &gc);
+    assert_string_equal(peer_ciphers, "AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305");
+
+    /* with the extra = this should not extract anything */
+    const char *proto = extract_var_peer_info(peer_info_normal, "IV_PROTO==", &gc);
+    assert_null(proto);
+
+    proto = extract_var_peer_info(peer_info_normal, "IV_PROTO=", &gc);
+    assert_string_equal(proto, "94");
+
+
+    const char *double_eq_info = "FOO=7\nFOO==new";
+    const char *foo_eq = extract_var_peer_info(double_eq_info, "FOO=", &gc);
+    const char *foo = extract_var_peer_info(double_eq_info, "FOO", &gc);
+    const char *foo_2eq = extract_var_peer_info(double_eq_info, "FOO==", &gc);
+
+    assert_string_equal(foo, "=7");
+    assert_string_equal(foo_eq, "7");
+    assert_string_equal(foo_2eq, "new");
+
+    assert_int_equal(extract_asymmetric_peer_id(double_eq_info), MAX_PEER_ID);
+    assert_int_equal(extract_asymmetric_peer_id(peer_info_normal), MAX_PEER_ID);
+    assert_int_equal(extract_asymmetric_peer_id(invalid_proto), MAX_PEER_ID);
+    assert_int_equal(extract_asymmetric_peer_id("ID=f7"), 0xf7);
+    assert_int_equal(extract_asymmetric_peer_id("X=foo\nID=12ab"), 0x12ab);
+    assert_int_equal(extract_asymmetric_peer_id("X=foo\nID=34dd\nY=bar"), 0x34dd);
+    assert_int_equal(extract_asymmetric_peer_id("X=foo\nID=12345678"), MAX_PEER_ID);
+
+    gc_free(&gc);
+}
 
 int
 main(void)
@@ -853,7 +1107,11 @@ main(void)
         cmocka_unit_test(test_data_channel_roundtrip_bf_cbc),
         cmocka_unit_test(test_data_channel_known_vectors_epoch),
         cmocka_unit_test(test_data_channel_known_vectors_shortpktid),
-        cmocka_unit_test(crypto_test_print_cert_details)
+        cmocka_unit_test(crypto_test_print_cert_details),
+        cmocka_unit_test(ssl_test_extract_last_matching_field),
+        cmocka_unit_test(ssl_test_reject_null_in_cert_subject),
+        cmocka_unit_test(ssl_test_escape_rfc_2253_chars_in_subject),
+        cmocka_unit_test(ssl_test_extract_peer_info)
 
     };
 

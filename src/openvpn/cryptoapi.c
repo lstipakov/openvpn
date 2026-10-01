@@ -169,10 +169,12 @@ parse_hexstring(const char *p, unsigned char *arr, DWORD capacity)
             break;
         }
 
-        if (!isxdigit(p[0]) || !isxdigit(p[1]) || sscanf(p, "%2hhx", &arr[i++]) != 1)
+        unsigned int b;
+        if (!isxdigit(p[0]) || !isxdigit(p[1]) || sscanf(p, "%2x", &b) != 1)
         {
             return 0;
         }
+        arr[i++] = (unsigned char)b;
     }
     return i;
 }
@@ -223,7 +225,6 @@ test_certificate_template(const char *cert_prop, const CERT_CONTEXT *cert_ctx)
     const CERT_INFO *info = cert_ctx->pCertInfo;
     const CERT_EXTENSION *ext;
     DWORD cbext;
-    void *pvext;
     struct gc_arena gc = gc_new();
     const WCHAR *tmpl_name = wide_string(cert_prop, &gc);
 
@@ -231,7 +232,7 @@ test_certificate_template(const char *cert_prop, const CERT_CONTEXT *cert_ctx)
     ext = CertFindExtension(szOID_CERTIFICATE_TEMPLATE, info->cExtension, info->rgExtension);
     if (ext)
     {
-        pvext = decode_object(&gc, X509_CERTIFICATE_TEMPLATE, &ext->Value, 0, &cbext);
+        const void *pvext = decode_object(&gc, X509_CERTIFICATE_TEMPLATE, &ext->Value, 0, &cbext);
         if (pvext && cbext >= sizeof(CERT_TEMPLATE_EXT))
         {
             const CERT_TEMPLATE_EXT *cte = (const CERT_TEMPLATE_EXT *)pvext;

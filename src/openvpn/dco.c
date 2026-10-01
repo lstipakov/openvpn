@@ -57,8 +57,8 @@ dco_install_key(struct tls_multi *multi, struct key_state *ks, const uint8_t *en
 
 {
     bool epoch = ks->crypto_options.flags & CO_EPOCH_DATA_KEY_FORMAT;
-    msg(D_DCO_DEBUG, "%s: peer_id=%d keyid=%d epoch=%d, currently %d keys installed", __func__,
-        multi->dco_peer_id, ks->key_id, multi->dco_keys_installed, epoch);
+    msg(D_DCO_DEBUG, "%s: peer_id=%d keyid=%d epoch=%d, currently %d keys installed",
+        __func__, multi->dco_peer_id, ks->key_id, epoch, multi->dco_keys_installed);
 
     /* Install a key in the PRIMARY slot only when no other key exist.
      * From that moment on, any new key will be installed in the SECONDARY
@@ -73,9 +73,12 @@ dco_install_key(struct tls_multi *multi, struct key_state *ks, const uint8_t *en
 
     int ret = dco_new_key(multi->dco, multi->dco_peer_id, ks->key_id, slot, encrypt_key, encrypt_iv,
                           decrypt_key, decrypt_iv, ciphername, epoch);
-    if ((ret == 0) && (multi->dco_keys_installed < 2))
+    if (ret == 0)
     {
-        multi->dco_keys_installed++;
+        if (multi->dco_keys_installed < 2)
+        {
+            multi->dco_keys_installed++;
+        }
         ks->dco_status =
             (slot == OVPN_KEY_SLOT_PRIMARY) ? DCO_INSTALLED_PRIMARY : DCO_INSTALLED_SECONDARY;
     }
@@ -109,7 +112,7 @@ dco_get_secondary_key(struct tls_multi *multi, const struct key_state *primary)
     for (int i = 0; i < KEY_SCAN_SIZE; ++i)
     {
         struct key_state *ks = get_key_scan(multi, i);
-        struct key_ctx_bi *key = &ks->crypto_options.key_ctx_bi;
+        const struct key_ctx_bi *key = &ks->crypto_options.key_ctx_bi;
 
         if (ks == primary)
         {
@@ -166,7 +169,13 @@ dco_update_keys(dco_context_t *dco, struct tls_multi *multi)
     /* if we have a primary key, it must have been installed already (keys
      * are installed upon generation in the TLS code)
      */
-    ASSERT(primary->dco_status != DCO_NOT_INSTALLED);
+    if (primary->dco_status == DCO_NOT_INSTALLED)
+    {
+        msg(D_DCO, "DCO key state mismatch: selected primary key is not installed "
+                   "(peer_id=%d, key_id=%d, dco_keys_installed=%d)",
+            multi->dco_peer_id, primary->key_id, multi->dco_keys_installed);
+        return false;
+    }
 
     struct key_state *secondary = dco_get_secondary_key(multi, primary);
     /* if the current primary key was installed as secondary in DCO,
@@ -190,6 +199,14 @@ dco_update_keys(dco_context_t *dco, struct tls_multi *multi)
                 primary->key_id);
         }
 
+        if (secondary && secondary->dco_status != DCO_INSTALLED_PRIMARY)
+        {
+            msg(D_DCO, "DCO key state mismatch: expected old primary key is not installed as DCO primary before swap "
+                       "(peer_id=%d, new_primary_key_id=%d, old_primary_key_id=%d, old_primary_dco_status=%d, dco_keys_installed=%d)",
+                multi->dco_peer_id, primary->key_id, secondary->key_id, secondary->dco_status, multi->dco_keys_installed);
+            return false;
+        }
+
         int ret = dco_swap_keys(dco, multi->dco_peer_id);
         if (ret < 0)
         {
@@ -200,7 +217,6 @@ dco_update_keys(dco_context_t *dco, struct tls_multi *multi)
         primary->dco_status = DCO_INSTALLED_PRIMARY;
         if (secondary)
         {
-            ASSERT(secondary->dco_status == DCO_INSTALLED_PRIMARY);
             secondary->dco_status = DCO_INSTALLED_SECONDARY;
         }
     }
@@ -528,14 +544,15 @@ dco_p2p_add_new_peer(struct context *c)
         c->c2.tls_multi->dco_peer_id = -1;
     }
 #endif
-    int ret = dco_new_peer(&c->c1.tuntap->dco, multi->peer_id, sock->sd, NULL,
-                           proto_is_dgram(sock->info.proto) ? remoteaddr : NULL, NULL, NULL);
+    int ret = dco_new_peer(&c->c1.tuntap->dco, multi->rx_peer_id, sock->sd, NULL,
+                           proto_is_dgram(sock->info.proto) ? remoteaddr : NULL,
+                           NULL, NULL);
     if (ret < 0)
     {
         return ret;
     }
 
-    c->c2.tls_multi->dco_peer_id = multi->peer_id;
+    c->c2.tls_multi->dco_peer_id = multi->rx_peer_id;
 
     return 0;
 }
@@ -560,7 +577,7 @@ dco_multi_get_localaddr(struct multi_context *m, struct multi_instance *mi,
                         struct sockaddr_storage *local)
 {
 #if ENABLE_IP_PKTINFO
-    struct context *c = &mi->context;
+    const struct context *c = &mi->context;
 
     if (!proto_is_udp(c->c2.link_sockets[0]->info.proto)
         || !(c->options.sockflags & SF_USE_IP_PKTINFO))
@@ -608,9 +625,9 @@ dco_multi_get_localaddr(struct multi_context *m, struct multi_instance *mi,
 int
 dco_multi_add_new_peer(struct multi_context *m, struct multi_instance *mi)
 {
-    struct context *c = &mi->context;
+    const struct context *c = &mi->context;
 
-    int peer_id = c->c2.tls_multi->peer_id;
+    int peer_id = c->c2.tls_multi->rx_peer_id;
     struct sockaddr *remoteaddr, *localaddr = NULL;
     struct sockaddr_storage local = { 0 };
     const socket_descriptor_t sd = c->c2.link_sockets[0]->sd;
@@ -629,14 +646,14 @@ dco_multi_add_new_peer(struct multi_context *m, struct multi_instance *mi)
 
     /* In server mode we need to fetch the remote addresses from the push config */
     struct in_addr vpn_ip4 = { 0 };
-    struct in_addr *vpn_addr4 = NULL;
+    const struct in_addr *vpn_addr4 = NULL;
     if (c->c2.push_ifconfig_defined)
     {
         vpn_ip4.s_addr = htonl(c->c2.push_ifconfig_local);
         vpn_addr4 = &vpn_ip4;
     }
 
-    struct in6_addr *vpn_addr6 = NULL;
+    const struct in6_addr *vpn_addr6 = NULL;
     if (c->c2.push_ifconfig_ipv6_defined)
     {
         vpn_addr6 = &c->c2.push_ifconfig_ipv6_local;
@@ -685,12 +702,12 @@ dco_install_iroute(struct multi_context *m, struct multi_instance *mi, struct mr
     }
 #endif
 
-    struct context *c = &mi->context;
+    const struct context *c = &mi->context;
     if (addrtype == MR_ADDR_IPV6)
     {
 #if defined(_WIN32)
         dco_win_add_iroute_ipv6(&c->c1.tuntap->dco, addr->v6.addr, addr->netbits,
-                                c->c2.tls_multi->peer_id);
+                                c->c2.tls_multi->rx_peer_id);
 #else
         const struct in6_addr *gateway = &mi->context.c2.push_ifconfig_ipv6_local;
         if (addr->type & MR_ONLINK_DCO_ADDR)
@@ -707,7 +724,7 @@ dco_install_iroute(struct multi_context *m, struct multi_instance *mi, struct mr
     {
 #if defined(_WIN32)
         dco_win_add_iroute_ipv4(&c->c1.tuntap->dco, addr->v4.addr, addr->netbits,
-                                c->c2.tls_multi->peer_id);
+                                c->c2.tls_multi->rx_peer_id);
 #else
         in_addr_t dest = htonl(addr->v4.addr);
         const in_addr_t *gateway = &mi->context.c2.push_ifconfig_local;
@@ -733,7 +750,7 @@ dco_delete_iroutes(struct multi_context *m, struct multi_instance *mi)
     }
     ASSERT(TUNNEL_TYPE(mi->context.c1.tuntap) == DEV_TYPE_TUN);
 
-    struct context *c = &mi->context;
+    const struct context *c = &mi->context;
 
     if (mi->context.c2.push_ifconfig_defined)
     {
